@@ -1,0 +1,126 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------- */
+/* Design tokens — "exam paper" identity for the learning platform. */
+/* ---------------------------------------------------------------- */
+@theme {
+  --color-paper: #f2f5ef;
+  --color-paper-raised: #fbfcfa;
+  --color-ink: #17322c;
+  --color-ink-soft: #3f5750;
+  --color-muted: #6b7b72;
+  --color-faint: #94a39b;
+
+  --color-line: #dbe3d5;
+  --color-line-strong: #c3cec0;
+
+  --color-accent: #e1a73f;
+  --color-accent-ink: #7a5417;
+  --color-accent-soft: #f7e8c7;
+
+  --color-success: #2f8f5b;
+  --color-success-text: #1f6b41;
+  --color-success-soft: #dcefe2;
+
+  --color-error: #c1473a;
+  --color-error-text: #96342a;
+  --color-error-soft: #f7e1dc;
+
+  --font-display: "Fraunces", ui-serif, Georgia, serif;
+  --font-body: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --shadow-card: 0 1px 2px rgba(23, 50, 44, 0.04), 0 12px 28px -14px rgba(23, 50, 44, 0.22);
+  --shadow-card-lift: 0 2px 4px rgba(23, 50, 44, 0.05), 0 20px 36px -16px rgba(23, 50, 44, 0.28);
+}
+
+html {
+  background-color: var(--color-paper);
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Faint dot-grid, evoking graph paper — the one ambient texture on the page. */
+.paper-field {
+  background-color: var(--color-paper);
+  background-image: radial-gradient(circle, var(--color-line-strong) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: -11px -11px;
+}
+
+/* Tabular numerals for the countdown timer so digits don't jitter. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom select chevron (keeps native <select>, no JS/behavior change). */
+.field-select {
+  appearance: none;
+  background-image: none;
+}
+
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
+}
+
+/* One reveal per screen mount — not per element, not on hover. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes rise-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes stamp-in {
+    0% {
+      opacity: 0;
+      transform: scale(0.85) rotate(-3deg);
+    }
+
+    60% {
+      opacity: 1;
+      transform: scale(1.03) rotate(-1deg);
+    }
+
+    100% {
+      opacity: 1;
+      transform: scale(1) rotate(-1deg);
+    }
+  }
+
+  @keyframes spin-slow {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .animate-rise-in {
+    animation: rise-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .animate-stamp-in {
+    animation: stamp-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+
+  .animate-spin-slow {
+    animation: spin-slow 0.8s linear infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  .animate-rise-in,
+  .animate-stamp-in {
+    opacity: 1;
+  }
+}
