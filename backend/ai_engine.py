@@ -5,13 +5,15 @@ from typing import List, Optional
 from groq import AsyncGroq
 
 import schemas
-from config import settings
+import os
+from dotenv import load_dotenv
 from text_extraction import sample_for_prompt
 
+load_dotenv()
 logger = logging.getLogger("ai_engine")
 
 client = AsyncGroq(
-    api_key=settings.GROQ_API_KEY) if settings.GROQ_API_KEY else None
+    api_key=os.getenv("GROQ_API_KEY"), timeout=120.0, max_retries=4,) if os.getenv("GROQ_API_KEY") else None
 
 QUESTION_GEN_MODEL = "openai/gpt-oss-120b"
 ANALYSIS_MODEL = "openai/gpt-oss-120b"
@@ -100,7 +102,7 @@ async def generate_question_batch(
     """
     _require_client()
 
-    total_questions = max(1, min(total_questions, settings.MAX_BATCH_SIZE))
+    total_questions = max(1, min(total_questions, 50))
 
     prompt = _build_batch_prompt(
         exam_type, subject, topic, min_difficulty, max_difficulty,

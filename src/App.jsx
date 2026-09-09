@@ -4,6 +4,23 @@ import OnboardingForm from "./components/OnboardingForm";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 
+// A bare "Failed to fetch" from the browser's fetch() is almost always
+// either (a) the backend is unreachable at API_BASE, or (b) the backend
+// responded but CORS_ORIGINS on the backend doesn't include this site's
+// origin, so the browser threw the response away. Surface that instead of
+// a generic message so it's actionable without opening devtools.
+function describeFetchError(err) {
+  if (err instanceof TypeError) {
+    return (
+      `Could not reach the server at ${API_BASE}. This is usually a CORS ` +
+      `or wrong-backend-URL problem — check that VITE_API_BASE (frontend) ` +
+      `points at this backend, and that CORS_ORIGINS (backend) includes ` +
+      `this site's URL.`
+    );
+  }
+  return err.message || "Could not start the quiz. Check the backend is running.";
+}
+
 function App() {
   const [step, setStep] = useState("setup"); // setup | quiz | summary
 
@@ -87,7 +104,7 @@ function App() {
       setStep("quiz");
     } catch (err) {
       console.error(err);
-      setError(err.message || "Could not start the quiz. Check the backend is running.");
+      setError(describeFetchError(err));
     } finally {
       setLoading(false);
     }
