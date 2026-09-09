@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import QuestionCard from "./components/QuestionCard";
 import OnboardingForm from "./components/OnboardingForm";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE || "https://ai-powered-learning-platform-qenu.onrender.com";
 
 // A bare "Failed to fetch" from the browser's fetch() is almost always
 // either (a) the backend is unreachable at API_BASE, or (b) the backend
