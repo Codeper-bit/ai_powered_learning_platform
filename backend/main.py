@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
             "request from it will be blocked by the browser."
         )
     else:
-        logger.info("CORS_ORIGINS = %s", os.getenv("CORS_ORIGINS")
+        logger.info("CORS_ORIGINS = %s", os.getenv("CORS_ORIGINS"))
     yield
     await app.state.db.close()
 
