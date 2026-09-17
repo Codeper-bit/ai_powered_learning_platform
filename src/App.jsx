@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import QuestionCard from "./components/QuestionCard";
 import OnboardingForm from "./components/OnboardingForm";
+<<<<<<< HEAD
 import Login from "./components/Login";
 import Dashboard from "./components/Dashboard";
 import ThemeToggle from "./components/ThemeToggle";
@@ -13,6 +14,27 @@ import {
   saveOfflineBank,
 } from "./offlineStore";
 import { apiFetch, describeFetchError, API_BASE } from "./api";
+=======
+
+const API_BASE = "https://ai-powered-learning-platform-qenu.onrender.com";
+
+// A bare "Failed to fetch" from the browser's fetch() is almost always
+// either (a) the backend is unreachable at API_BASE, or (b) the backend
+// responded but CORS_ORIGINS on the backend doesn't include this site's
+// origin, so the browser threw the response away. Surface that instead of
+// a generic message so it's actionable without opening devtools.
+function describeFetchError(err) {
+  if (err instanceof TypeError) {
+    return (
+      `Could not reach the server at ${API_BASE}. This is usually a CORS ` +
+      `or wrong-backend-URL problem — check that VITE_API_BASE (frontend) ` +
+      `points at this backend, and that CORS_ORIGINS (backend) includes ` +
+      `this site's URL.`
+    );
+  }
+  return err.message || "Could not start the quiz. Check the backend is running.";
+}
+>>>>>>> d698a99b9ac9c3401a253d1635f01b16065cb149
 
 function App() {
   // login -> home -> setup -> quiz -> summary
