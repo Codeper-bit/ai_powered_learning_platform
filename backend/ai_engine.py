@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import List, Optional
@@ -108,14 +109,22 @@ async def generate_question_batch(
     )
 
     try:
-        response = await client.chat.completions.create(
-            model=QUESTION_GEN_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            response_format={"type": "json_object"},
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=QUESTION_GEN_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                response_format={"type": "json_object"},
+            ),
+            timeout=settings.AI_TIMEOUT_SECONDS,
         )
         raw_content = response.choices[0].message.content
         data = json.loads(raw_content)
+    except asyncio.TimeoutError as exc:
+        logger.error("AI request timed out after %ss",
+                     settings.AI_TIMEOUT_SECONDS)
+        raise ValueError(
+            "The AI provider took too long to respond. Please try again.") from exc
     except json.JSONDecodeError as exc:
         logger.error("AI returned invalid JSON: %s", exc)
         raise ValueError(
@@ -125,7 +134,16 @@ async def generate_question_batch(
         raise ValueError(
             "Could not reach the AI provider. Please try again.") from exc
 
-    raw_questions = data.get("questions", [])
+    # The model is asked for a JSON object ({"questions": [...]}), but LLMs
+    # don't always honor a wrapper shape perfectly — some responses come
+    # back as a bare array instead. Accept either instead of crashing on
+    # `.get()` when it's a list.
+    if isinstance(data, list):
+        raw_questions = data
+    elif isinstance(data, dict):
+        raw_questions = data.get("questions", [])
+    else:
+        raw_questions = []
     questions: List[schemas.DynamicQuestion] = []
     for item in raw_questions[:total_questions]:
         try:
@@ -210,11 +228,14 @@ async def analyze_user_attempt(
     """
 
     try:
-        response = await client.chat.completions.create(
-            model=ANALYSIS_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=ANALYSIS_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            ),
+            timeout=settings.AI_TIMEOUT_SECONDS,
         )
         data = json.loads(response.choices[0].message.content)
     except Exception as exc:

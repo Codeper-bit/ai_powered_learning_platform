@@ -5,12 +5,11 @@ const DIFFICULTY_LEVELS = ["Easy", "Medium", "Hard"];
 const EXAM_TYPES = ["General", "WAEC", "NECO", "JAMB"];
 const MAX_QUESTIONS = 50;
 
-function OnboardingForm({ apiBase, onGenerate, loading, error }) {
+function OnboardingForm({ apiBase, userId, onGenerate, loading, error }) {
   const [mode, setMode] = useState("topic"); // "topic" | "document"
   const [uploadedDocument, setUploadedDocument] = useState(null);
 
   const [form, setForm] = useState({
-    name: "",
     subject: "",
     examType: "General",
     customInstructions: "",
@@ -39,7 +38,7 @@ function OnboardingForm({ apiBase, onGenerate, loading, error }) {
     }
 
     onGenerate({
-      name: form.name.trim() || "Student",
+      user_id: userId,
       subject: mode === "document" ? (form.subject.trim() || "") : (form.subject.trim() || "Mathematics"),
       exam_type: form.examType,
       // The free-text box is where "WAEC style", "NECO past questions",
@@ -108,17 +107,6 @@ function OnboardingForm({ apiBase, onGenerate, loading, error }) {
         </div>
 
         <div className="space-y-5">
-          <div>
-            <label className={labelClass}>Your name</label>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => update("name", e.target.value)}
-              placeholder="e.g. Ada"
-              className={inputClass}
-            />
-          </div>
-
           {mode === "document" && (
             <div>
               <label className={labelClass}>Study material</label>

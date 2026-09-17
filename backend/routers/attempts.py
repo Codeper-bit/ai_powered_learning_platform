@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import ai_engine
 import schemas
+from authn import get_current_user
 from deps import get_db
 
 router = APIRouter(prefix="/attempts", tags=["attempts"])
@@ -12,6 +13,7 @@ router = APIRouter(prefix="/attempts", tags=["attempts"])
 async def submit_answer(
     submission: schemas.AnswerSubmission,
     db: asyncpg.Pool = Depends(get_db),
+    user_id: int = Depends(get_current_user),
 ):
     question = await db.fetchrow(
         """
@@ -32,9 +34,7 @@ async def submit_answer(
         stored_misconception=question["misconception"],
     )
 
-    # ON CONFLICT makes a double-submit (double click, retry after a slow
-    # network) safe: it just re-records the same answer instead of creating
-    # a second attempt row that would skew progress stats.
+    #    re-records the same answer instead of creating a second attempt row that would skew progress stats.
     await db.execute(
         """
         INSERT INTO attempts (user_id, question_id, answer, is_correct)
@@ -42,7 +42,7 @@ async def submit_answer(
         ON CONFLICT (user_id, question_id)
         DO UPDATE SET answer = EXCLUDED.answer, is_correct = EXCLUDED.is_correct
         """,
-        submission.user_id,
+        user_id,
         submission.question_id,
         submission.selected_answer,
         result.is_correct,
@@ -58,7 +58,7 @@ async def submit_answer(
           )
         """,
         question["session_id"],
-        submission.user_id,
+        user_id,
     )
     result.session_complete = remaining == 0
     if result.session_complete:

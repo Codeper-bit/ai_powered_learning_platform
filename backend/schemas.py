@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel, ConfigDict, field_validator
 from typing import List, Optional
 
@@ -14,8 +16,10 @@ def _clean_str(v):
 
 
 class SessionCreateRequest(BaseModel):
-    """Registration/setup form payload -> creates a quiz_session + batch of questions."""
-    name: str = "Student"
+    """Registration/setup form payload -> creates a quiz_session + batch of questions.
+    The owner is always the authenticated caller (see authn.get_current_user) —
+    never taken from the request body, so one student can't create or read
+    sessions under another student's id."""
     exam_type: str = "General"          # e.g. WAEC / NECO / JAMB
     subject: str = "Mathematics"
     topic: Optional[str] = None
@@ -24,9 +28,10 @@ class SessionCreateRequest(BaseModel):
     min_difficulty: str = "Easy"
     max_difficulty: str = "Hard"
     custom_request: Optional[str] = None
-    document_id: Optional[int] = None   # set to generate from an uploaded document
+    # set to generate from an uploaded document
+    document_id: Optional[int] = None
 
-    @field_validator("name", "exam_type", "subject", "min_difficulty", "max_difficulty", mode="before")
+    @field_validator("exam_type", "subject", "min_difficulty", "max_difficulty", mode="before")
     @classmethod
     def clean_fields(cls, v):
         return _clean_str(v)
@@ -64,12 +69,11 @@ class SessionResponse(BaseModel):
     exam_type: str
     total_questions: int
     time_limit: int
-    source: str = "topic"               # "topic" | "document"
+    source: str = "topic"               # "topic" | "document" | "cached"
     first_question: Optional[DynamicQuestion] = None
 
 
 class AnswerSubmission(BaseModel):
-    user_id: int
     question_id: int
     selected_answer: str
 
@@ -89,8 +93,130 @@ class AnswerResult(BaseModel):
     session_complete: bool = False
 
 
+class RegisterRequest(BaseModel):
+    name: str
+    password: str
+    email: Optional[str] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def clean_name(cls, v):
+        return _clean_str(v)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def clean_email(cls, v):
+        cleaned = _clean_str(v)
+        return cleaned or None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class LoginRequest(BaseModel):
+    name: str
+    password: str
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def clean_name(cls, v):
+        return _clean_str(v)
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class AuthResponse(BaseModel):
+    user_id: int
+    name: str
+    access_token: str
+    token_type: str = "bearer"
+
+
+class TodoCreateRequest(BaseModel):
+    title: str
+    subject: Optional[str] = None
+    due_date: Optional[date] = None     # parsed from an ISO date string, e.g. "2026-09-20"
+    priority: str = "medium"            # low | medium | high
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def clean_title(cls, v):
+        return _clean_str(v)
+
+    @field_validator("due_date", mode="before")
+    @classmethod
+    def blank_due_date_to_none(cls, v):
+        return v or None
+
+    @field_validator("priority", mode="after")
+    @classmethod
+    def check_priority(cls, v):
+        v = (v or "medium").strip().lower()
+        return v if v in ("low", "medium", "high") else "medium"
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class TodoUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    subject: Optional[str] = None
+    due_date: Optional[date] = None
+    priority: Optional[str] = None
+    is_complete: Optional[bool] = None
+
+    @field_validator("due_date", mode="before")
+    @classmethod
+    def blank_due_date_to_none(cls, v):
+        return v or None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class Todo(BaseModel):
+    id: int
+    title: str
+    subject: Optional[str] = None
+    due_date: Optional[str] = None
+    priority: str
+    is_complete: bool
+    created_at: str
+
+
 class DocumentUploadResponse(BaseModel):
     document_id: int
     filename: str
     word_count: int
     preview: str                        # short snippet so the UI can confirm content
+
+
+class ConceptMastery(BaseModel):
+    """Accuracy on one concept, aggregated across every session the student
+    has ever done (not just the most recent one)."""
+    concept: str
+    attempts: int
+    correct: int
+    accuracy: float
+
+
+class LearningCurvePoint(BaseModel):
+    """One point on the learning-curve chart: a completed session's raw
+    accuracy plus a smoothed trailing-average `trend` value, so the chart
+    can show both the noisy per-session number and the overall direction."""
+    session_id: int
+    date: str
+    subject: str
+    attempts: int
+    accuracy: float
+    trend: float
+
+
+class ProgressOverview(BaseModel):
+    """Everything the dashboard needs in one call: the student's overall
+    'impression' snapshot plus the full learning-curve series."""
+    overall_accuracy: float
+    total_attempts: int
+    total_sessions: int
+    current_streak_days: int
+    best_concept: Optional[ConceptMastery] = None
+    weakest_concept: Optional[ConceptMastery] = None
+    concept_mastery: List[ConceptMastery]
+    learning_curve: List[LearningCurvePoint]

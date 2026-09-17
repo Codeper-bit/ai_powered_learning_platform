@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import ai_engine
 import schemas
+from authn import get_current_user
+from config import settings
 from deps import get_db
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -22,22 +24,93 @@ def parse_options(raw_options):
     return raw_options
 
 
-async def _get_or_create_user(db: asyncpg.Pool, name: str) -> int:
-    row = await db.fetchrow("SELECT id FROM users WHERE name = $1 LIMIT 1", name)
-    if row is None:
-        row = await db.fetchrow(
-            "INSERT INTO users (name) VALUES ($1) RETURNING id", name
-        )
-    return row["id"]
+async def _find_reusable_batch(
+    db: asyncpg.Pool,
+    subject: str,
+    exam_type: str,
+    min_difficulty: str,
+    max_difficulty: str,
+    custom_request: str | None,
+    total_questions: int,
+) -> int | None:
+    """The caching layer: look for a recent topic-based (non-document)
+    batch that already matches these exact generation parameters and has
+    at least as many questions as requested. If found, its questions get
+    copied into the new session instead of calling the LLM again — this is
+    what keeps token spend from scaling linearly with traffic on popular
+    subject/difficulty combinations.
+
+    Deliberately excludes document-based sessions (each document's content
+    is unique, so there's nothing to reuse) and caps how many times any one
+    batch can be reused (QUESTION_REUSE_MAX_COUNT) so content still
+    refreshes periodically under sustained load rather than one batch
+    circulating forever.
+    """
+    row = await db.fetchrow(
+        f"""
+        SELECT id FROM quiz_sessions
+        WHERE document_id IS NULL
+          AND subject = $1
+          AND exam_type = $2
+          AND min_difficulty = $3
+          AND max_difficulty = $4
+          AND custom_request IS NOT DISTINCT FROM $5
+          AND total_questions >= $6
+          AND reuse_count < $7
+          AND created_at > now() - make_interval(days => $8)
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        subject,
+        exam_type,
+        min_difficulty,
+        max_difficulty,
+        custom_request,
+        total_questions,
+        settings.QUESTION_REUSE_MAX_COUNT,
+        settings.QUESTION_REUSE_WINDOW_DAYS,
+    )
+    return row["id"] if row else None
+
+
+async def _clone_batch(
+    conn: asyncpg.Connection,
+    source_session_id: int,
+    new_session_id: int,
+    total_questions: int,
+) -> None:
+    """Copy another session's questions into a brand-new session — no LLM
+    call, just a DB-side copy. Runs inside the same transaction as the new
+    session's own INSERT, so a failure here can't leave a session with a
+    mismatched or empty question set."""
+    await conn.execute(
+        """
+        INSERT INTO questions
+            (session_id, position, question, options, correct_answer,
+             concept, difficulty, explanation, misconception)
+        SELECT $1, position, question, options, correct_answer,
+               concept, difficulty, explanation, misconception
+        FROM questions
+        WHERE session_id = $2
+        ORDER BY position ASC
+        LIMIT $3
+        """,
+        new_session_id,
+        source_session_id,
+        total_questions,
+    )
+    await conn.execute(
+        "UPDATE quiz_sessions SET reuse_count = reuse_count + 1 WHERE id = $1",
+        source_session_id,
+    )
 
 
 @router.post("", response_model=schemas.SessionResponse)
 async def create_session(
     payload: schemas.SessionCreateRequest,
     db: asyncpg.Pool = Depends(get_db),
+    user_id: int = Depends(get_current_user),
 ):
-    user_id = await _get_or_create_user(db, payload.name)
-
     source_text = None
     subject = payload.subject
     if payload.document_id is not None:
@@ -51,19 +124,33 @@ async def create_session(
         if payload.subject in ("", "Mathematics"):
             subject = doc["filename"]
 
-    try:
-        batch = await ai_engine.generate_question_batch(
-            exam_type=payload.exam_type,
+    reused_from = None
+    if payload.document_id is None:
+        reused_from = await _find_reusable_batch(
+            db,
             subject=subject,
-            topic=payload.topic,
+            exam_type=payload.exam_type,
             min_difficulty=payload.min_difficulty,
             max_difficulty=payload.max_difficulty,
-            total_questions=payload.total_questions,
             custom_request=payload.custom_request,
-            source_text=source_text,
+            total_questions=payload.total_questions,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+
+    batch = None
+    if reused_from is None:
+        try:
+            batch = await ai_engine.generate_question_batch(
+                exam_type=payload.exam_type,
+                subject=subject,
+                topic=payload.topic,
+                min_difficulty=payload.min_difficulty,
+                max_difficulty=payload.max_difficulty,
+                total_questions=payload.total_questions,
+                custom_request=payload.custom_request,
+                source_text=source_text,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=502, detail=str(e))
 
     async with db.acquire() as conn:
         async with conn.transaction():
@@ -81,69 +168,104 @@ async def create_session(
                 subject,
                 payload.topic,
                 payload.time_limit,
-                len(batch),
+                payload.total_questions if reused_from is not None else len(batch),
                 payload.min_difficulty,
                 payload.max_difficulty,
                 payload.custom_request,
             )
             session_id = session_row["id"]
 
-            # Bulk insert the whole batch in one round trip instead of N
-            # sequential awaits — this is the main win for "no delay" at
-            # session-start time.
-            rows = [
-                (
+            if reused_from is not None:
+                # Cache hit — copy an existing batch's questions instead of
+                # generating new ones. No LLM call happens on this path.
+                await _clone_batch(conn, reused_from, session_id, payload.total_questions)
+                inserted_ids = await conn.fetch(
+                    "SELECT id FROM questions WHERE session_id = $1 ORDER BY position ASC",
                     session_id,
-                    position,
-                    q.question,
-                    json.dumps(q.options),
-                    q.correct_answer,
-                    q.concept,
-                    q.difficulty,
-                    q.explanation,
-                    q.misconception,
                 )
-                for position, q in enumerate(batch, start=1)
-            ]
-            inserted_ids = await conn.fetch(
-                """
-                INSERT INTO questions
-                    (session_id, position, question, options, correct_answer,
-                     concept, difficulty, explanation, misconception)
-                SELECT * FROM unnest(
-                    $1::int[], $2::int[], $3::text[], $4::jsonb[], $5::text[],
-                    $6::text[], $7::text[], $8::text[], $9::text[]
+            else:
+                # Bulk insert the whole batch in one round trip instead of N
+                # sequential awaits — this is the main win for "no delay" at
+                # session-start time.
+                rows = [
+                    (
+                        session_id,
+                        position,
+                        q.question,
+                        json.dumps(q.options),
+                        q.correct_answer,
+                        q.concept,
+                        q.difficulty,
+                        q.explanation,
+                        q.misconception,
+                    )
+                    for position, q in enumerate(batch, start=1)
+                ]
+                inserted_ids = await conn.fetch(
+                    """
+                    INSERT INTO questions
+                        (session_id, position, question, options, correct_answer,
+                         concept, difficulty, explanation, misconception)
+                    SELECT * FROM unnest(
+                        $1::int[], $2::int[], $3::text[], $4::jsonb[], $5::text[],
+                        $6::text[], $7::text[], $8::text[], $9::text[]
+                    )
+                    RETURNING id
+                    """,
+                    [session_id] * len(rows),
+                    [r[1] for r in rows],
+                    [r[2] for r in rows],
+                    [r[3] for r in rows],
+                    [r[4] for r in rows],
+                    [r[5] for r in rows],
+                    [r[6] for r in rows],
+                    [r[7] for r in rows],
+                    [r[8] for r in rows],
                 )
-                RETURNING id
-                """,
-                [session_id] * len(rows),
-                [r[1] for r in rows],
-                [r[2] for r in rows],
-                [r[3] for r in rows],
-                [r[4] for r in rows],
-                [r[5] for r in rows],
-                [r[6] for r in rows],
-                [r[7] for r in rows],
-                [r[8] for r in rows],
-            )
 
-    first_question = batch[0]
-    first_question.id = inserted_ids[0]["id"]
+    if reused_from is not None:
+        first_row = await db.fetchrow(
+            """
+            SELECT id, question, options, correct_answer, concept, difficulty,
+                   explanation, misconception
+            FROM questions WHERE session_id = $1 ORDER BY position ASC LIMIT 1
+            """,
+            session_id,
+        )
+        first_question = schemas.DynamicQuestion(
+            id=first_row["id"],
+            question=first_row["question"],
+            options=parse_options(first_row["options"]),
+            correct_answer=first_row["correct_answer"],
+            concept=first_row["concept"],
+            difficulty=first_row["difficulty"],
+            explanation=first_row["explanation"],
+            misconception=first_row["misconception"],
+        )
+        total_generated = len(inserted_ids)
+    else:
+        first_question = batch[0]
+        first_question.id = inserted_ids[0]["id"]
+        total_generated = len(batch)
 
     return schemas.SessionResponse(
         session_id=session_id,
         user_id=user_id,
         subject=subject,
         exam_type=payload.exam_type,
-        total_questions=len(batch),
+        total_questions=total_generated,
         time_limit=payload.time_limit,
-        source="document" if source_text else "topic",
+        source="document" if source_text else ("cached" if reused_from is not None else "topic"),
         first_question=first_question,
     )
 
 
 @router.get("/{session_id}/next-question")
-async def get_next_question(session_id: int, user_id: int, db: asyncpg.Pool = Depends(get_db)):
+async def get_next_question(
+    session_id: int,
+    db: asyncpg.Pool = Depends(get_db),
+    user_id: int = Depends(get_current_user),
+):
     # NOT EXISTS (indexed anti-join) instead of NOT IN: scales better as
     # attempts grow and sidesteps NOT IN's NULL-handling footgun.
     unattempted = await db.fetch(
@@ -203,7 +325,11 @@ async def get_next_question(session_id: int, user_id: int, db: asyncpg.Pool = De
 
 
 @router.get("/{session_id}/progress")
-async def get_session_progress(session_id: int, user_id: int, db: asyncpg.Pool = Depends(get_db)):
+async def get_session_progress(
+    session_id: int,
+    db: asyncpg.Pool = Depends(get_db),
+    user_id: int = Depends(get_current_user),
+):
     rows = await db.fetch(
         """
         SELECT
@@ -235,3 +361,50 @@ async def get_session_progress(session_id: int, user_id: int, db: asyncpg.Pool =
         )
 
     return progress
+
+
+@router.get("/{session_id}/questions", response_model=list[schemas.DynamicQuestion])
+async def get_session_questions(
+    session_id: int,
+    db: asyncpg.Pool = Depends(get_db),
+    user_id: int = Depends(get_current_user),
+):
+    """Return the whole question batch (including correct answers and
+    explanations) for local caching. Used by the frontend to build an
+    offline practice bank: since the whole batch was already generated
+    and stored at session-creation time, no AI call happens here — this
+    just hands back what's already in Postgres so the client can replay
+    the quiz later with zero network calls, even with no internet.
+    """
+    owner = await db.fetchval(
+        "SELECT user_id FROM quiz_sessions WHERE id = $1", session_id
+    )
+    if owner is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if owner != user_id:
+        raise HTTPException(status_code=403, detail="This session belongs to a different user")
+
+    rows = await db.fetch(
+        """
+        SELECT id, question, options, correct_answer, concept, difficulty,
+               explanation, misconception
+        FROM questions
+        WHERE session_id = $1
+        ORDER BY position ASC
+        """,
+        session_id,
+    )
+
+    return [
+        schemas.DynamicQuestion(
+            id=row["id"],
+            question=row["question"],
+            options=parse_options(row["options"]),
+            correct_answer=row["correct_answer"],
+            concept=row["concept"],
+            difficulty=row["difficulty"],
+            explanation=row["explanation"],
+            misconception=row["misconception"],
+        )
+        for row in rows
+    ]

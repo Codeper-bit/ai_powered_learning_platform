@@ -33,8 +33,44 @@
   --shadow-card-lift: 0 2px 4px rgba(23, 50, 44, 0.05), 0 20px 36px -16px rgba(23, 50, 44, 0.28);
 }
 
+/* Dark mode — same "exam paper" identity, lights off: a study desk at
+   night instead of daylight. Every component already reads color through
+   these tokens (bg-paper, text-ink, border-line, etc.), so redefining the
+   custom properties here is enough to reskin the whole app — no component
+   changes needed. Toggled by setting data-theme="dark" on <html> (see
+   theme.js), and applied before first paint in main.jsx to avoid a flash
+   of the wrong theme. */
+:root[data-theme="dark"] {
+  --color-paper: #101815;
+  --color-paper-raised: #182420;
+  --color-ink: #eef2ea;
+  --color-ink-soft: #c7d1c8;
+  --color-muted: #93a398;
+  --color-faint: #64766a;
+
+  --color-line: #26362e;
+  --color-line-strong: #384c41;
+
+  --color-accent: #e4ad4c;
+  --color-accent-ink: #f6dca0;
+  --color-accent-soft: #3a2f16;
+
+  --color-success: #4caf7a;
+  --color-success-text: #8fe0b0;
+  --color-success-soft: #16362a;
+
+  --color-error: #e2695a;
+  --color-error-text: #f3a99c;
+  --color-error-soft: #3a2019;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 28px -14px rgba(0, 0, 0, 0.55);
+  --shadow-card-lift: 0 2px 4px rgba(0, 0, 0, 0.35), 0 20px 36px -16px rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
+
 html {
   background-color: var(--color-paper);
+  color-scheme: light;
 }
 
 body {
@@ -65,6 +101,57 @@ body {
 ::selection {
   background: var(--color-accent-soft);
   color: var(--color-ink);
+}
+
+/* Shared button styles — one consistent primary/secondary look across
+   every screen (home, quiz, dashboard, forms) instead of each button
+   re-declaring its own variant of the same classes. */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.75rem;
+  background-color: var(--color-ink);
+  color: var(--color-paper-raised);
+  font-weight: 600;
+  padding: 0.75rem 1.5rem;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--color-ink-soft);
+}
+.btn-primary:active:not(:disabled) {
+  transform: scale(0.99);
+}
+.btn-primary:disabled {
+  background-color: var(--color-faint);
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-line-strong);
+  background-color: var(--color-paper);
+  color: var(--color-ink-soft);
+  font-weight: 600;
+  padding: 0.75rem 1.5rem;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+.btn-secondary:hover:not(:disabled) {
+  background-color: var(--color-paper-raised);
+  border-color: var(--color-accent);
+}
+.btn-secondary:active:not(:disabled) {
+  transform: scale(0.99);
+}
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* One reveal per screen mount — not per element, not on hover. */
