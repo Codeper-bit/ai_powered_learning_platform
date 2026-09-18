@@ -59,6 +59,8 @@ class DynamicQuestion(BaseModel):
     explanation: Optional[str] = None
     misconception: Optional[str] = None
 
+    option_insights: Optional[dict] = None
+
     model_config = ConfigDict(extra="ignore")
 
 
@@ -76,6 +78,11 @@ class SessionResponse(BaseModel):
 class AnswerSubmission(BaseModel):
     question_id: int
     selected_answer: str
+    # Set by the client when this submission is being replayed from the
+    # offline sync queue rather than answered live. Purely informational —
+    # grading and dedup (UNIQUE user_id+question_id) work identically
+    # either way, so this can never be used to bypass validation.
+    from_offline_sync: bool = False
 
     model_config = ConfigDict(extra="ignore")
 
@@ -84,6 +91,8 @@ class MisconceptionFeedback(BaseModel):
     identified_misconception: Optional[str] = None
     confidence_score: Optional[float] = 0.0
     targeted_explanation: Optional[str] = None
+
+    confidence_label: Optional[str] = None
 
 
 class AnswerResult(BaseModel):
@@ -134,7 +143,8 @@ class AuthResponse(BaseModel):
 class TodoCreateRequest(BaseModel):
     title: str
     subject: Optional[str] = None
-    due_date: Optional[date] = None     # parsed from an ISO date string, e.g. "2026-09-20"
+    # parsed from an ISO date string, e.g. "2026-09-20"
+    due_date: Optional[date] = None
     priority: str = "medium"            # low | medium | high
 
     @field_validator("title", mode="before")
@@ -195,6 +205,27 @@ class ConceptMastery(BaseModel):
     attempts: int
     correct: int
     accuracy: float
+
+    status: str = "NEW"
+
+    suspected_misconception: Optional[str] = None
+    misconception_confidence: Optional[str] = None
+
+
+class RecoveryRecommendation(BaseModel):
+    """The single most actionable 'what to study next' recommendation,
+    built only from stored attempts — never fabricated numbers."""
+    concept: str
+    status: str
+    evidence: str                      # e.g. "4 of your last 6 attempts were incorrect"
+    recent_incorrect: int
+    recent_total: int
+    suspected_misconception: Optional[str] = None
+    misconception_confidence: Optional[str] = None
+    recommended_question_count: int = 5
+
+    accuracy_before: Optional[float] = None
+    accuracy_after: Optional[float] = None
 
 
 class LearningCurvePoint(BaseModel):

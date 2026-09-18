@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import QuestionCard from "./components/QuestionCard";
 import OnboardingForm from "./components/OnboardingForm";
-<<<<<<< HEAD
 import Login from "./components/Login";
 import Dashboard from "./components/Dashboard";
 import ThemeToggle from "./components/ThemeToggle";
@@ -12,29 +11,22 @@ import {
   clearUser,
   loadOfflineBanks,
   saveOfflineBank,
+  enqueueSyncItem,
+  loadSyncQueue,
+  removeSyncItems,
+  countPendingSync,
 } from "./offlineStore";
-import { apiFetch, describeFetchError, API_BASE } from "./api";
-=======
+import { apiFetch, describeFetchError } from "./api";
 
-const API_BASE = "https://ai-powered-learning-platform-qenu.onrender.com";
+
+const API_BASE = "http://127.0.0.1:8000";
 
 // A bare "Failed to fetch" from the browser's fetch() is almost always
 // either (a) the backend is unreachable at API_BASE, or (b) the backend
 // responded but CORS_ORIGINS on the backend doesn't include this site's
 // origin, so the browser threw the response away. Surface that instead of
 // a generic message so it's actionable without opening devtools.
-function describeFetchError(err) {
-  if (err instanceof TypeError) {
-    return (
-      `Could not reach the server at ${API_BASE}. This is usually a CORS ` +
-      `or wrong-backend-URL problem — check that VITE_API_BASE (frontend) ` +
-      `points at this backend, and that CORS_ORIGINS (backend) includes ` +
-      `this site's URL.`
-    );
-  }
-  return err.message || "Could not start the quiz. Check the backend is running.";
-}
->>>>>>> d698a99b9ac9c3401a253d1635f01b16065cb149
+
 
 function App() {
   // login -> home -> setup -> quiz -> summary
@@ -59,11 +51,70 @@ function App() {
   const [activeBank, setActiveBank] = useState(null); // the bank being replayed
   const [offlineIndex, setOfflineIndex] = useState(0);
   const [offlineAnswers, setOfflineAnswers] = useState([]); // per-question {isCorrect, ...}
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [syncing, setSyncing] = useState(false);
 
   // Keep the latest session in a ref so the single long-lived timer
   // interval below never has to be torn down and rebuilt every second.
   const sessionRef = useRef(session);
   sessionRef.current = session;
+
+  const userRef = useRef(user);
+  userRef.current = user;
+
+  // ---- Offline sync: replay queued offline answers against the real
+  // /attempts endpoint as soon as we're back online. The backend re-grades
+  // and re-validates every one of them (see routers/attempts.py) — nothing
+  // here is trusted as a final score, it's just "try to deliver this
+  // answer now that we can."
+  const syncPendingAttempts = useCallback(async () => {
+    const currentUser = userRef.current;
+    if (!currentUser || syncing) return;
+    const queue = loadSyncQueue(currentUser.user_id);
+    if (!queue.length) {
+      setPendingSyncCount(0);
+      return;
+    }
+    setSyncing(true);
+    const synced = [];
+    for (const item of queue) {
+      try {
+        const response = await apiFetch(`/attempts`, {
+          method: "POST",
+          body: JSON.stringify({
+            question_id: item.questionId,
+            selected_answer: item.answer,
+            from_offline_sync: true,
+          }),
+        });
+        // Any response the server actually returned (even a 4xx like "question
+        // not found") means this item is resolved and shouldn't be retried
+        // forever; only a network failure (thrown below) leaves it queued.
+        if (response) synced.push(item.clientId);
+      } catch (err) {
+        // Still offline, or the request failed outright — leave this (and
+        // everything after it, since order doesn't matter here) queued for
+        // the next attempt.
+        console.error("Offline sync failed for one item:", err);
+      }
+    }
+    if (synced.length) {
+      const remaining = removeSyncItems(currentUser.user_id, synced);
+      setPendingSyncCount(remaining.length);
+    }
+    setSyncing(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncing]);
+
+  // Try to flush the queue whenever connectivity comes back, and once on
+  // startup in case it was never flushed last session.
+  useEffect(() => {
+    function handleOnline() {
+      syncPendingAttempts();
+    }
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [syncPendingAttempts]);
 
   // Restore a logged-in user on load, so the name never has to be typed twice.
   useEffect(() => {
@@ -71,15 +122,20 @@ function App() {
     if (stored) {
       setUser(stored);
       setOfflineBanks(loadOfflineBanks(stored.user_id));
+      setPendingSyncCount(countPendingSync(stored.user_id));
       setStep("home");
+      if (navigator.onLine) syncPendingAttempts();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleAuthenticated(authedUser) {
     setUser(authedUser);
     saveUser(authedUser);
     setOfflineBanks(loadOfflineBanks(authedUser.user_id));
+    setPendingSyncCount(countPendingSync(authedUser.user_id));
     setStep("home");
+    if (navigator.onLine) syncPendingAttempts();
   }
 
   function handleLogout() {
@@ -182,6 +238,29 @@ function App() {
     }
   }
 
+  // Learning-recovery flow: jump straight into a short, targeted quiz on
+  // whatever concept the dashboard identified as WEAK (see
+  // GET /users/me/recovery), instead of routing back through the general
+  // setup form. Reuses the exact same /sessions endpoint and adaptive
+  // next-question logic as any other quiz — "targeted" here just means the
+  // AI is told which concept to focus on via `topic`.
+  function startTargetedPractice(recommendation) {
+    const note = recommendation.suspected_misconception
+      ? `The student has a suspected misconception on "${recommendation.concept}": ${recommendation.suspected_misconception}. Write questions that directly test whether this misconception is still present.`
+      : `The student is weak on "${recommendation.concept}". Focus every question tightly on this concept.`;
+    startSession({
+      subject: recommendation.concept,
+      exam_type: "General",
+      topic: recommendation.concept,
+      custom_request: note,
+      total_questions: recommendation.recommended_question_count || 5,
+      min_difficulty: "Easy",
+      max_difficulty: "Medium",
+      time_limit: 15,
+      document_id: null,
+    });
+  }
+
   async function submitAnswer(questionId, answer) {
     if (!session || submitting) return;
     setSubmitting(true);
@@ -253,7 +332,7 @@ function App() {
     setStep("offlineQuiz");
   }
 
-  function submitOfflineAnswer(_questionId, answer) {
+  function submitOfflineAnswer(questionId, answer) {
     const q = activeBank.questions[offlineIndex];
     const isCorrect = answer.trim() === q.correct_answer.trim();
     const offlineResult = {
@@ -262,18 +341,36 @@ function App() {
       misconception_analysis: isCorrect
         ? null
         : {
-            targeted_explanation:
-              q.explanation || "Review this concept and try a similar question.",
-          },
+          targeted_explanation:
+            q.explanation || "Review this concept and try a similar question.",
+        },
     };
     setResult(offlineResult);
     setOfflineAnswers((prev) => [...prev, { concept: q.concept, isCorrect }]);
+
+    // Queue for sync instead of trusting this local score as final — the
+    // backend re-grades every one of these against the stored correct
+    // answer once they're replayed (see routers/attempts.py). The client's
+    // isCorrect above is only ever used for the immediate on-screen
+    // feedback and the local offline summary, never sent as the score.
+    if (user) {
+      const updatedQueue = enqueueSyncItem(user.user_id, {
+        questionId,
+        answer,
+      });
+      setPendingSyncCount(updatedQueue.length);
+    }
   }
 
   function nextOfflineQuestion() {
     setResult(null);
     if (offlineIndex + 1 >= activeBank.questions.length) {
       setStep("offlineSummary");
+      // Best-effort: try to flush the queue right away in case
+      // connectivity is actually available (e.g. this bank was replayed
+      // for review, not out of necessity). If it's not, these stay queued
+      // and the "online" listener above will retry later.
+      if (navigator.onLine) syncPendingAttempts();
     } else {
       setOfflineIndex((i) => i + 1);
     }
@@ -351,21 +448,19 @@ function App() {
             <nav className="flex items-center gap-1 rounded-full border border-line bg-paper p-1 text-sm font-medium">
               <button
                 onClick={() => setStep("home")}
-                className={`rounded-full px-3 py-1.5 transition ${
-                  step === "home"
-                    ? "bg-paper-raised text-ink shadow-sm ring-1 ring-line-strong"
-                    : "text-muted hover:text-ink-soft"
-                }`}
+                className={`rounded-full px-3 py-1.5 transition ${step === "home"
+                  ? "bg-paper-raised text-ink shadow-sm ring-1 ring-line-strong"
+                  : "text-muted hover:text-ink-soft"
+                  }`}
               >
                 Home
               </button>
               <button
                 onClick={() => setStep("dashboard")}
-                className={`rounded-full px-3 py-1.5 transition ${
-                  step === "dashboard"
-                    ? "bg-paper-raised text-ink shadow-sm ring-1 ring-line-strong"
-                    : "text-muted hover:text-ink-soft"
-                }`}
+                className={`rounded-full px-3 py-1.5 transition ${step === "dashboard"
+                  ? "bg-paper-raised text-ink shadow-sm ring-1 ring-line-strong"
+                  : "text-muted hover:text-ink-soft"
+                  }`}
               >
                 Dashboard
               </button>
@@ -448,6 +543,11 @@ function App() {
                   ? `${offlineBanks.length} saved question set${offlineBanks.length === 1 ? "" : "s"} ready — no internet needed.`
                   : "Complete a quiz online first — it's saved here automatically for offline replay."}
               </p>
+              {pendingSyncCount > 0 && (
+                <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-accent-soft px-2.5 py-0.5 text-xs font-medium text-accent-ink">
+                  ⏳ {pendingSyncCount} answer{pendingSyncCount === 1 ? "" : "s"} pending sync
+                </p>
+              )}
             </button>
 
             <button
@@ -469,6 +569,7 @@ function App() {
           <Dashboard
             onBack={() => setStep("home")}
             onStartQuiz={() => setStep("setup")}
+            onStartTargeted={startTargetedPractice}
           />
         )}
 
@@ -501,11 +602,10 @@ function App() {
                 )}
               </span>
               <span
-                className={`tabular-nums inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${
-                  timeLeft < 60
-                    ? "border-error-soft bg-error-soft text-error-text"
-                    : "border-line-strong bg-paper-raised text-ink-soft"
-                }`}
+                className={`tabular-nums inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${timeLeft < 60
+                  ? "border-error-soft bg-error-soft text-error-text"
+                  : "border-line-strong bg-paper-raised text-ink-soft"
+                  }`}
               >
                 ⏱ {formatTime(timeLeft)}
               </span>
@@ -591,26 +691,24 @@ function App() {
                   <div className="mb-1.5 flex items-baseline justify-between gap-3">
                     <span className="font-medium text-ink-soft">{item.concept}</span>
                     <span
-                      className={`text-sm font-semibold ${
-                        item.accuracy >= 70
-                          ? "text-success-text"
-                          : item.accuracy >= 40
+                      className={`text-sm font-semibold ${item.accuracy >= 70
+                        ? "text-success-text"
+                        : item.accuracy >= 40
                           ? "text-accent-ink"
                           : "text-error-text"
-                      }`}
+                        }`}
                     >
                       {item.accuracy}%
                     </span>
                   </div>
                   <div className="h-2.5 overflow-hidden rounded-full border border-line bg-paper">
                     <div
-                      className={`h-full rounded-full transition-all duration-700 ease-out ${
-                        item.accuracy >= 70
-                          ? "bg-success"
-                          : item.accuracy >= 40
+                      className={`h-full rounded-full transition-all duration-700 ease-out ${item.accuracy >= 70
+                        ? "bg-success"
+                        : item.accuracy >= 40
                           ? "bg-accent"
                           : "bg-error"
-                      }`}
+                        }`}
                       style={{ width: `${item.accuracy}%` }}
                     />
                   </div>
@@ -745,6 +843,11 @@ function App() {
             <p className="mb-7 text-sm text-muted sm:text-base">
               You answered {offlineAnswers.length} questions in {activeBank.subject} — no internet used.
             </p>
+            <p className="mb-7 text-xs text-faint">
+              {pendingSyncCount > 0
+                ? `⏳ ${pendingSyncCount} answer${pendingSyncCount === 1 ? "" : "s"} will sync to your account automatically once you're back online.`
+                : "✓ Synced to your account."}
+            </p>
 
             <div className="space-y-4 text-left">
               {offlineProgress().map((item) => (
@@ -752,26 +855,24 @@ function App() {
                   <div className="mb-1.5 flex items-baseline justify-between gap-3">
                     <span className="font-medium text-ink-soft">{item.concept}</span>
                     <span
-                      className={`text-sm font-semibold ${
-                        item.accuracy >= 70
-                          ? "text-success-text"
-                          : item.accuracy >= 40
+                      className={`text-sm font-semibold ${item.accuracy >= 70
+                        ? "text-success-text"
+                        : item.accuracy >= 40
                           ? "text-accent-ink"
                           : "text-error-text"
-                      }`}
+                        }`}
                     >
                       {item.accuracy}%
                     </span>
                   </div>
                   <div className="h-2.5 overflow-hidden rounded-full border border-line bg-paper">
                     <div
-                      className={`h-full rounded-full transition-all duration-700 ease-out ${
-                        item.accuracy >= 70
-                          ? "bg-success"
-                          : item.accuracy >= 40
+                      className={`h-full rounded-full transition-all duration-700 ease-out ${item.accuracy >= 70
+                        ? "bg-success"
+                        : item.accuracy >= 40
                           ? "bg-accent"
                           : "bg-error"
-                      }`}
+                        }`}
                       style={{ width: `${item.accuracy}%` }}
                     />
                   </div>

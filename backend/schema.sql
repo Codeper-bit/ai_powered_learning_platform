@@ -12,7 +12,6 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT UNIQUE,
     password_hash TEXT
 );
--- Columns added after the table's first release, for upgrades in place:
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
 
@@ -24,6 +23,11 @@ CREATE TABLE IF NOT EXISTS documents (
     word_count INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- user_id used to be nullable/unset (uploads weren't tied to an owner).
+-- New uploads always set it (see routers/documents.py); the column stays
+-- nullable so old rows aren't touched, but is now indexed for ownership
+-- checks on every document read.
+CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id);
 
 CREATE TABLE IF NOT EXISTS quiz_sessions (
     id SERIAL PRIMARY KEY,
@@ -57,8 +61,13 @@ CREATE TABLE IF NOT EXISTS questions (
     concept TEXT,
     difficulty TEXT NOT NULL,
     explanation TEXT,
-    misconception TEXT
+    misconception TEXT,
+    -- Optional per-option diagnostic metadata generated alongside the
+    -- question: {"Option text": "what picking this option indicates"}.
+    -- Nullable/absent for older rows and gracefully ignored where unused.
+    option_insights JSONB
 );
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS option_insights JSONB;
 
 CREATE TABLE IF NOT EXISTS attempts (
     id SERIAL PRIMARY KEY,
@@ -67,9 +76,29 @@ CREATE TABLE IF NOT EXISTS attempts (
     answer TEXT NOT NULL,
     is_correct BOOLEAN NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- The likely misconception identified for THIS attempt (null when
+    -- correct). Persisting it — instead of only returning it to the client
+    -- once — is what lets the diagnostic engine notice a repeated error
+    -- pattern across attempts instead of re-deriving it from scratch and
+    -- forgetting it happened.
+    misconception TEXT,
+    -- Evidence-based label for how confident we are that this attempt's
+    -- misconception reflects a real, recurring gap rather than one slip:
+    -- 'needs_more_evidence' | 'possible' | 'likely'. See ai diagnostic
+    -- logic in routers/attempts.py.
+    misconception_confidence TEXT,
+    -- True when this row arrived via the offline-sync queue rather than a
+    -- live submission. Kept for transparency/debugging; scoring is always
+    -- recalculated server-side regardless of this flag.
+    synced_from_offline BOOLEAN NOT NULL DEFAULT false,
     UNIQUE (user_id, question_id)    -- one attempt per question per user;
-                                      -- makes double-submit safe via ON CONFLICT
+                                      -- makes double-submit (including a
+                                      -- duplicate offline-sync retry) safe
+                                      -- via ON CONFLICT
 );
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS misconception TEXT;
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS misconception_confidence TEXT;
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS synced_from_offline BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS todos (
     id SERIAL PRIMARY KEY,

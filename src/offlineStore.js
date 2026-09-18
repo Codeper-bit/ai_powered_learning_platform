@@ -65,3 +65,61 @@ export function deleteOfflineBank(userId, bankId) {
   }
   return updated;
 }
+
+// ---- Offline sync queue -----------------------------------------------
+// Answers submitted while offline are recorded locally here, then replayed
+// against POST /attempts (the same endpoint used for live answers) as soon
+// as the client is back online. The backend re-grades and re-validates
+// every one of them itself — nothing about the score is ever trusted from
+// this queue — and the existing UNIQUE(user_id, question_id) constraint on
+// `attempts` makes re-sending an already-synced item a harmless no-op
+// instead of a duplicate.
+
+const SYNC_QUEUE_KEY_PREFIX = "aiTutorSyncQueue:";
+
+function syncQueueKey(userId) {
+  return `${SYNC_QUEUE_KEY_PREFIX}${userId}`;
+}
+
+export function loadSyncQueue(userId) {
+  try {
+    const raw = localStorage.getItem(syncQueueKey(userId));
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSyncQueue(userId, queue) {
+  try {
+    localStorage.setItem(syncQueueKey(userId), JSON.stringify(queue));
+    return true;
+  } catch {
+    return false; // storage unavailable/full — item stays only in memory
+  }
+}
+
+/** Queue one offline answer for later sync. `clientId` de-dupes entries
+ * within the local queue itself (in case the same question is queued
+ * twice before a sync ever runs); the server-side UNIQUE constraint is the
+ * backstop against duplicates once it reaches the backend. */
+export function enqueueSyncItem(userId, item) {
+  const existing = loadSyncQueue(userId);
+  const clientId = `${item.questionId}`;
+  if (existing.some((q) => q.clientId === clientId)) return existing;
+  const updated = [...existing, { ...item, clientId, queuedAt: new Date().toISOString() }];
+  saveSyncQueue(userId, updated);
+  return updated;
+}
+
+export function removeSyncItems(userId, clientIds) {
+  const existing = loadSyncQueue(userId);
+  const toRemove = new Set(clientIds);
+  const updated = existing.filter((q) => !toRemove.has(q.clientId));
+  saveSyncQueue(userId, updated);
+  return updated;
+}
+
+export function countPendingSync(userId) {
+  return loadSyncQueue(userId).length;
+}

@@ -4,6 +4,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
 import schemas
+from authn import get_current_user
 from config import settings
 from deps import get_db
 from text_extraction import extract_text
@@ -15,10 +16,16 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def upload_document(
     file: UploadFile = File(...),
     db: asyncpg.Pool = Depends(get_db),
+    user_id: int = Depends(get_current_user),
 ):
     """Accept any supported document, extract its text, and store it so a
     quiz session can be generated from it. The file itself is never kept —
-    only the extracted text, which is all the AI needs."""
+    only the extracted text, which is all the AI needs.
+
+    Requires auth and always stamps the uploader's user_id, so a document
+    can only ever be quizzed on (see the ownership check in
+    routers/sessions.py create_session) by the person who uploaded it.
+    """
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in settings.ALLOWED_UPLOAD_EXTENSIONS:
         supported = ", ".join(sorted(settings.ALLOWED_UPLOAD_EXTENSIONS))
@@ -46,10 +53,11 @@ async def upload_document(
 
     row = await db.fetchrow(
         """
-        INSERT INTO documents (filename, content, word_count)
-        VALUES ($1, $2, $3)
+        INSERT INTO documents (user_id, filename, content, word_count)
+        VALUES ($1, $2, $3, $4)
         RETURNING id
         """,
+        user_id,
         file.filename,
         text,
         word_count,

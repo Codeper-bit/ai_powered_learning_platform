@@ -26,7 +26,10 @@ export function describeFetchError(err) {
 export async function apiFetch(path, options = {}) {
   const user = loadUser();
   const headers = { ...(options.headers || {}) };
-  if (options.body && !headers["Content-Type"]) {
+  // Don't force a JSON Content-Type onto a FormData body (file uploads) —
+  // the browser needs to set its own multipart boundary, and overriding it
+  // here would silently break every upload.
+  if (options.body && !headers["Content-Type"] && !(options.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
   if (user?.access_token) {

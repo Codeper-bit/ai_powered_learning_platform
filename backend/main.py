@@ -19,28 +19,16 @@ logger = logging.getLogger("main")
 async def lifespan(app: FastAPI):
     app.state.db = await create_pool()
     logger.info("Database pool ready")
-    # Loud, explicit startup log so a misconfigured deploy is obvious from
-    # the Render log tail instead of showing up as a mystery "Failed to
-    # fetch" in the browser.
-<<<<<<< HEAD
-    if settings.CORS_ORIGINS == ["http://localhost:5173", "http://127.0.0.1:5173"]:
-        logger.warning(
-            "CORS_ORIGINS is still the localhost default. If your frontend "
-=======
-    if os.getenv("CORS_ORIGINS") == "https://ai-powered-learning-platform-qenu.onrender.com":
+
+    if os.getenv("CORS_ORIGINS") == "http://localhost:5173/":
         logger.warning(
             "CORS_ORIGINS is still the localhost default. If your frontend"
->>>>>>> d698a99b9ac9c3401a253d1635f01b16065cb149
             "is deployed, set CORS_ORIGINS on this service to its exact "
             "URL (e.g. https://your-frontend.onrender.com) or every "
             "request from it will be blocked by the browser."
         )
     else:
-<<<<<<< HEAD
-        logger.info("CORS_ORIGINS = %s", settings.CORS_ORIGINS)
-=======
         logger.info("CORS_ORIGINS = %s", os.getenv("CORS_ORIGINS"))
->>>>>>> d698a99b9ac9c3401a253d1635f01b16065cb149
     yield
     await app.state.db.close()
 

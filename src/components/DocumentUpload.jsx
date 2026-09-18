@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { apiFetch } from "../api";
 
 const ACCEPTED_EXTENSIONS = [".txt", ".md", ".pdf", ".docx", ".csv", ".rtf"];
 const MAX_FILE_MB = 8;
@@ -8,7 +9,7 @@ const MAX_FILE_MB = 8;
  * reports { document_id, filename, word_count } up to the parent so the
  * quiz can be generated from the document instead of a bare topic.
  */
-function DocumentUpload({ apiBase, document, onDocumentReady, onClear, disabled }) {
+function DocumentUpload({ document, onDocumentReady, onClear, disabled }) {
   const inputRef = useRef(null);
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -35,7 +36,11 @@ function DocumentUpload({ apiBase, document, onDocumentReady, onClear, disabled 
         const formData = new FormData();
         formData.append("file", file);
 
-        const response = await fetch(`${apiBase}/documents/upload`, {
+        // apiFetch attaches the logged-in user's bearer token — the
+        // backend now requires auth on this endpoint and stamps the
+        // document with the uploader's user_id, so it can only ever be
+        // used to quiz that same student.
+        const response = await apiFetch(`/documents/upload`, {
           method: "POST",
           body: formData,
         });
@@ -53,7 +58,7 @@ function DocumentUpload({ apiBase, document, onDocumentReady, onClear, disabled 
         setUploading(false);
       }
     },
-    [apiBase, onDocumentReady]
+    [onDocumentReady]
   );
 
   function handleDrop(e) {

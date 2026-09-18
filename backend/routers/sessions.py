@@ -4,6 +4,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 
 import ai_engine
+import concept_profile
 import schemas
 from authn import get_current_user
 from config import settings
@@ -12,6 +13,14 @@ from deps import get_db
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 DIFFICULTY_RANK = {"easy": 1, "medium": 2, "hard": 3}
+
+# How many of the (adaptively) next-picked questions in a row we're willing
+# to steer toward a weak concept before letting normal difficulty-based
+# selection take over again for a bit. Keeps the loop from just hammering
+# one concept forever ("do not make the system endlessly give the student
+# the same type of question") while still surfacing it repeatedly enough to
+# reassess whether the student has actually improved.
+WEAK_CONCEPT_STREAK_CAP = 3
 
 
 def difficulty_rank(label: str) -> int:
@@ -22,6 +31,30 @@ def parse_options(raw_options):
     if isinstance(raw_options, str):
         return json.loads(raw_options)
     return raw_options
+
+
+def parse_insights(raw_insights):
+    if raw_insights is None:
+        return None
+    if isinstance(raw_insights, str):
+        try:
+            return json.loads(raw_insights)
+        except (TypeError, ValueError):
+            return None
+    return raw_insights
+
+
+async def _require_session_owner(db: asyncpg.Pool, session_id: int, user_id: int) -> None:
+    """Every session-scoped endpoint below depends on this. A student can
+    only ever read/act on their own session — never taken on faith from the
+    URL alone."""
+    owner = await db.fetchval(
+        "SELECT user_id FROM quiz_sessions WHERE id = $1", session_id
+    )
+    if owner is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if owner != user_id:
+        raise HTTPException(status_code=403, detail="This session belongs to a different user")
 
 
 async def _find_reusable_batch(
@@ -47,7 +80,7 @@ async def _find_reusable_batch(
     circulating forever.
     """
     row = await db.fetchrow(
-        f"""
+        """
         SELECT id FROM quiz_sessions
         WHERE document_id IS NULL
           AND subject = $1
@@ -87,9 +120,9 @@ async def _clone_batch(
         """
         INSERT INTO questions
             (session_id, position, question, options, correct_answer,
-             concept, difficulty, explanation, misconception)
+             concept, difficulty, explanation, misconception, option_insights)
         SELECT $1, position, question, options, correct_answer,
-               concept, difficulty, explanation, misconception
+               concept, difficulty, explanation, misconception, option_insights
         FROM questions
         WHERE session_id = $2
         ORDER BY position ASC
@@ -115,10 +148,16 @@ async def create_session(
     subject = payload.subject
     if payload.document_id is not None:
         doc = await db.fetchrow(
-            "SELECT filename, content FROM documents WHERE id = $1", payload.document_id
+            "SELECT filename, content, user_id FROM documents WHERE id = $1",
+            payload.document_id,
         )
         if doc is None:
             raise HTTPException(status_code=404, detail="Uploaded document not found")
+        # A document's content is study material the uploader chose to
+        # share with the AI, not with other students — quizzing on it must
+        # stay confined to whoever uploaded it.
+        if doc["user_id"] is not None and doc["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="This document belongs to a different user")
         source_text = doc["content"]
         # Let the document drive the subject label when the user didn't set one
         if payload.subject in ("", "Mathematics"):
@@ -198,6 +237,7 @@ async def create_session(
                         q.difficulty,
                         q.explanation,
                         q.misconception,
+                        json.dumps(q.option_insights) if q.option_insights else None,
                     )
                     for position, q in enumerate(batch, start=1)
                 ]
@@ -205,10 +245,10 @@ async def create_session(
                     """
                     INSERT INTO questions
                         (session_id, position, question, options, correct_answer,
-                         concept, difficulty, explanation, misconception)
+                         concept, difficulty, explanation, misconception, option_insights)
                     SELECT * FROM unnest(
                         $1::int[], $2::int[], $3::text[], $4::jsonb[], $5::text[],
-                        $6::text[], $7::text[], $8::text[], $9::text[]
+                        $6::text[], $7::text[], $8::text[], $9::text[], $10::jsonb[]
                     )
                     RETURNING id
                     """,
@@ -221,13 +261,14 @@ async def create_session(
                     [r[6] for r in rows],
                     [r[7] for r in rows],
                     [r[8] for r in rows],
+                    [r[9] for r in rows],
                 )
 
     if reused_from is not None:
         first_row = await db.fetchrow(
             """
             SELECT id, question, options, correct_answer, concept, difficulty,
-                   explanation, misconception
+                   explanation, misconception, option_insights
             FROM questions WHERE session_id = $1 ORDER BY position ASC LIMIT 1
             """,
             session_id,
@@ -241,6 +282,7 @@ async def create_session(
             difficulty=first_row["difficulty"],
             explanation=first_row["explanation"],
             misconception=first_row["misconception"],
+            option_insights=parse_insights(first_row["option_insights"]),
         )
         total_generated = len(inserted_ids)
     else:
@@ -266,6 +308,8 @@ async def get_next_question(
     db: asyncpg.Pool = Depends(get_db),
     user_id: int = Depends(get_current_user),
 ):
+    await _require_session_owner(db, session_id, user_id)
+
     # NOT EXISTS (indexed anti-join) instead of NOT IN: scales better as
     # attempts grow and sidesteps NOT IN's NULL-handling footgun.
     unattempted = await db.fetch(
@@ -309,8 +353,41 @@ async def get_next_question(
         target_rank = current_rank + 1 if last_attempt["is_correct"] else current_rank - 1
         target_rank = max(1, min(3, target_rank))
 
+    # --- Concept-aware layer ---------------------------------------------
+    # On top of difficulty, steer toward a concept the student's OVERALL
+    # profile (across every session, not just this one) shows as WEAK —
+    # requires real evidence (see concept_profile.MIN_ATTEMPTS_FOR_VERDICT),
+    # so this never kicks in off a single missed question. Capped at
+    # WEAK_CONCEPT_STREAK_CAP consecutive picks so the loop still varies
+    # instead of drilling one concept forever, and only used when a
+    # scaffolding-appropriate question on that concept actually remains.
+    candidate_pool = unattempted
+    weak_concepts = await concept_profile.get_weak_concepts(db, user_id)
+    if weak_concepts:
+        recent_weak_streak = await db.fetchval(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT q.concept
+                FROM attempts a
+                JOIN questions q ON a.question_id = q.id
+                WHERE a.user_id = $1 AND q.session_id = $2
+                ORDER BY a.created_at DESC
+                LIMIT $3
+            ) recent
+            WHERE recent.concept = ANY($4::text[])
+            """,
+            user_id,
+            session_id,
+            WEAK_CONCEPT_STREAK_CAP,
+            weak_concepts,
+        )
+        if (recent_weak_streak or 0) < WEAK_CONCEPT_STREAK_CAP:
+            targeted = [row for row in unattempted if row["concept"] in weak_concepts]
+            if targeted:
+                candidate_pool = targeted
+
     best = min(
-        unattempted,
+        candidate_pool,
         key=lambda row: (abs(difficulty_rank(row["difficulty"]) - target_rank), row["position"]),
     )
 
@@ -321,6 +398,7 @@ async def get_next_question(
         "concept": best["concept"],
         "difficulty": best["difficulty"],
         "session_complete": False,
+        "targeting_weak_concept": candidate_pool is not unattempted,
     }
 
 
@@ -330,6 +408,8 @@ async def get_session_progress(
     db: asyncpg.Pool = Depends(get_db),
     user_id: int = Depends(get_current_user),
 ):
+    await _require_session_owner(db, session_id, user_id)
+
     rows = await db.fetch(
         """
         SELECT
@@ -376,18 +456,12 @@ async def get_session_questions(
     just hands back what's already in Postgres so the client can replay
     the quiz later with zero network calls, even with no internet.
     """
-    owner = await db.fetchval(
-        "SELECT user_id FROM quiz_sessions WHERE id = $1", session_id
-    )
-    if owner is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if owner != user_id:
-        raise HTTPException(status_code=403, detail="This session belongs to a different user")
+    await _require_session_owner(db, session_id, user_id)
 
     rows = await db.fetch(
         """
         SELECT id, question, options, correct_answer, concept, difficulty,
-               explanation, misconception
+               explanation, misconception, option_insights
         FROM questions
         WHERE session_id = $1
         ORDER BY position ASC
@@ -405,6 +479,7 @@ async def get_session_questions(
             difficulty=row["difficulty"],
             explanation=row["explanation"],
             misconception=row["misconception"],
+            option_insights=parse_insights(row["option_insights"]),
         )
         for row in rows
     ]

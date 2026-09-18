@@ -18,6 +18,7 @@ client = AsyncGroq(
 
 QUESTION_GEN_MODEL = "openai/gpt-oss-120b"
 ANALYSIS_MODEL = "openai/gpt-oss-120b"
+AI_TIMEOUT_SECONDS = int(os.getenv("AI_TIMEOUT_SECONDS", "45"))
 
 
 def _require_client():
@@ -62,8 +63,10 @@ def _build_batch_prompt(
     - Each question must have exactly 4 options.
     - Do not repeat the same question or concept twice.
     - "difficulty" must be one of the values within the requested range (e.g. Easy, Medium, Hard).
+    - "concept" is the core concept; "sub_concept" is a narrower skill within it (e.g. concept "Differentiation", sub_concept "Chain Rule").
     - "explanation" is a short (1-2 sentence) explanation of why the correct answer is correct.
-    - "misconception" is a short description of the most common wrong-answer misconception for this question.
+    - "misconception" is a short description of the single most common wrong-answer misconception for this question.
+    - "option_insights" maps EACH of the 3 incorrect option strings (verbatim, as they appear in "options") to a short phrase describing what choosing that option suggests the student is confused about. Do not include the correct option as a key.
 
     Return ONLY a valid JSON object (no markdown, no extra text) with this exact shape:
     {{
@@ -73,9 +76,15 @@ def _build_batch_prompt(
           "options": ["Option A text", "Option B text", "Option C text", "Option D text"],
           "correct_answer": "Option A text",
           "concept": "Core Concept Name",
+          "sub_concept": "Narrower Skill Name",
           "difficulty": "Easy",
           "explanation": "Why the correct answer is correct.",
-          "misconception": "What a student who picks a wrong option is likely confused about."
+          "misconception": "What a student who picks a wrong option is likely confused about.",
+          "option_insights": {{
+            "Option B text": "What picking this suggests",
+            "Option C text": "What picking this suggests",
+            "Option D text": "What picking this suggests"
+          }}
         }}
       ]
     }}
@@ -118,13 +127,13 @@ async def generate_question_batch(
                 temperature=0.7,
                 response_format={"type": "json_object"},
             ),
-            timeout=settings.AI_TIMEOUT_SECONDS,
+            timeout=AI_TIMEOUT_SECONDS,
         )
         raw_content = response.choices[0].message.content
         data = json.loads(raw_content)
     except asyncio.TimeoutError as exc:
         logger.error("AI request timed out after %ss",
-                     settings.AI_TIMEOUT_SECONDS)
+                     AI_TIMEOUT_SECONDS)
         raise ValueError(
             "The AI provider took too long to respond. Please try again.") from exc
     except json.JSONDecodeError as exc:
@@ -149,6 +158,9 @@ async def generate_question_batch(
     questions: List[schemas.DynamicQuestion] = []
     for item in raw_questions[:total_questions]:
         try:
+            option_insights = item.get("option_insights")
+            if not isinstance(option_insights, dict):
+                option_insights = None
             questions.append(
                 schemas.DynamicQuestion(
                     question=item["question"],
@@ -158,6 +170,7 @@ async def generate_question_batch(
                     difficulty=item.get("difficulty", min_difficulty),
                     explanation=item.get("explanation"),
                     misconception=item.get("misconception"),
+                    option_insights=option_insights,
                 )
             )
         except (KeyError, TypeError):
@@ -176,6 +189,7 @@ async def analyze_user_attempt(
     selected_answer: str,
     stored_explanation: Optional[str] = None,
     stored_misconception: Optional[str] = None,
+    option_insights: Optional[dict] = None,
 ) -> schemas.AnswerResult:
     """Grade an answer against the stored question and return feedback.
 
@@ -183,16 +197,26 @@ async def analyze_user_attempt(
     correct_answer) so it's instant and free. The AI call is only used to
     generate a targeted explanation when the student gets it wrong and no
     misconception was pre-generated for this question.
+
+    Note: the confidence label (repeated-error tracking) is layered on top
+    of this in routers/attempts.py, which has access to the student's
+    history — this function only ever grades a single, isolated attempt.
     """
     is_correct = selected_answer.strip() == correct_answer.strip()
 
     if is_correct:
         return schemas.AnswerResult(is_correct=True, correct_answer=correct_answer)
 
-    # Wrong answer: prefer the misconception generated at batch time (no AI call)
-    if stored_misconception:
+    # Wrong answer: prefer the option-specific insight for exactly the
+    # option the student picked (most precise, no AI call), then fall back
+    # to the question's single generic misconception (also no AI call).
+    option_specific = None
+    if option_insights and isinstance(option_insights, dict):
+        option_specific = option_insights.get(selected_answer.strip())
+
+    if option_specific or stored_misconception:
         misconception = schemas.MisconceptionFeedback(
-            identified_misconception=stored_misconception,
+            identified_misconception=option_specific or stored_misconception,
             confidence_score=1.0,
             targeted_explanation=stored_explanation or "Review the concept and try a similar question.",
         )
@@ -237,7 +261,7 @@ async def analyze_user_attempt(
                 temperature=0.2,
                 response_format={"type": "json_object"},
             ),
-            timeout=settings.AI_TIMEOUT_SECONDS,
+            timeout=AI_TIMEOUT_SECONDS,
         )
         data = json.loads(response.choices[0].message.content)
     except Exception as exc:

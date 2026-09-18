@@ -36,6 +36,22 @@ const TIERS = {
   weak: { min: 0, color: COLORS.error, text: "text-error-text", label: "Needs work" },
 };
 
+// Mirrors backend/concept_profile.py's status_for(): NEW/DEVELOPING/WEAK/
+// MASTERED, each requiring a minimum amount of evidence before landing on
+// WEAK or MASTERED — never assigned off a single question.
+const STATUS_LABELS = {
+  NEW: "New · not enough data",
+  DEVELOPING: "Developing",
+  WEAK: "Needs work",
+  MASTERED: "Mastered",
+};
+const STATUS_STYLES = {
+  NEW: "bg-paper text-faint border border-line",
+  DEVELOPING: "bg-accent-soft text-accent-ink",
+  WEAK: "bg-error-soft text-error-text",
+  MASTERED: "bg-success-soft text-success-text",
+};
+
 function tierFor(accuracy) {
   if (accuracy >= TIERS.strong.min) return TIERS.strong;
   if (accuracy >= TIERS.building.min) return TIERS.building;
@@ -110,10 +126,12 @@ function ImpressionRing({ accuracy }) {
 /** Cross-session dashboard: "impression" snapshot + learning curve +
  * concept mastery + study to-do list. Fetches /users/me/overview once on
  * mount — the authenticated caller's own data, via the bearer token. */
-function Dashboard({ onBack, onStartQuiz }) {
+function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [recovery, setRecovery] = useState(null);
+  const [startingTargeted, setStartingTargeted] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,10 +149,28 @@ function Dashboard({ onBack, onStartQuiz }) {
         if (!cancelled) setLoading(false);
       });
 
+    // The learning-recovery recommendation is fetched separately (and
+    // failing quietly) since it's optional — the rest of the dashboard is
+    // still useful without it, and a brand-new student simply gets null
+    // back (no WEAK concept yet) rather than an error.
+    apiFetchJson("/users/me/recovery")
+      .then((json) => {
+        if (!cancelled) setRecovery(json);
+      })
+      .catch(() => {
+        if (!cancelled) setRecovery(null);
+      });
+
     return () => {
       cancelled = true;
     };
   }, []);
+
+  function handleStartTargeted() {
+    if (!recovery || !onStartTargeted) return;
+    setStartingTargeted(true);
+    onStartTargeted(recovery);
+  }
 
   if (loading) {
     return (
@@ -263,6 +299,48 @@ function Dashboard({ onBack, onStartQuiz }) {
         )}
       </div>
 
+      {/* Learning recovery: "what should I study next, and why" */}
+      {recovery && (
+        <div className="rounded-2xl border border-accent/40 bg-accent-soft/30 p-6 shadow-card sm:p-8">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-accent-ink">Focus next</p>
+          <h3 className="font-display text-xl font-semibold text-ink">{recovery.concept}</h3>
+
+          <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">Why we think this</p>
+          <p className="text-sm text-ink-soft">{recovery.evidence}.</p>
+          {recovery.suspected_misconception && (
+            <p className="mt-2 rounded-xl border-l-4 border-accent bg-paper-raised/70 p-3 text-sm text-ink-soft">
+              <span className="font-semibold">{recovery.misconception_confidence}:</span>{" "}
+              {recovery.suspected_misconception}
+            </p>
+          )}
+
+          {recovery.accuracy_before != null && recovery.accuracy_after != null && (
+            <div className="mt-3 flex items-center gap-4 text-sm">
+              <span className="text-muted">
+                Before: <span className="font-semibold text-ink">{recovery.accuracy_before}%</span>
+              </span>
+              <span className="text-faint">→</span>
+              <span className="text-muted">
+                After: <span className="font-semibold text-ink">{recovery.accuracy_after}%</span>
+              </span>
+            </div>
+          )}
+
+          <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-muted">Recommended</p>
+          <p className="mb-4 text-sm text-ink-soft">
+            {recovery.recommended_question_count} targeted practice questions on this concept.
+          </p>
+
+          <button
+            onClick={handleStartTargeted}
+            disabled={startingTargeted}
+            className="rounded-xl bg-ink px-5 py-2.5 text-sm font-semibold text-paper-raised transition hover:bg-ink-soft active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {startingTargeted ? "Starting…" : "Start targeted practice →"}
+          </button>
+        </div>
+      )}
+
       {/* Learning curve */}
       <div className="rounded-2xl border border-line bg-paper-raised p-6 shadow-card sm:p-8">
         <p className="mb-1 font-display text-lg font-semibold text-ink">Learning curve</p>
@@ -349,6 +427,27 @@ function Dashboard({ onBack, onStartQuiz }) {
             </Bar>
           </BarChart>
         </ResponsiveContainer>
+
+        <div className="mt-5 space-y-2 border-t border-line pt-4">
+          {concept_mastery.map((c) => (
+            <div key={c.concept} className="flex items-start justify-between gap-3 text-sm">
+              <div className="min-w-0">
+                <p className="font-medium text-ink-soft">{c.concept}</p>
+                {c.suspected_misconception && (
+                  <p className="mt-0.5 text-xs text-faint">
+                    {c.misconception_confidence}: {c.suspected_misconception}
+                  </p>
+                )}
+              </div>
+              <span
+                className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold ${STATUS_STYLES[c.status] || STATUS_STYLES.NEW
+                  }`}
+              >
+                {STATUS_LABELS[c.status] || c.status}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
 
       <StudyTodoList />
