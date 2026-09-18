@@ -16,10 +16,10 @@ import {
   removeSyncItems,
   countPendingSync,
 } from "./offlineStore";
-import { apiFetch, describeFetchError } from "./api";
+import { apiFetch, apiFetchJson, describeFetchError } from "./api";
 
 
-const API_BASE = import.meta.env.VITE_API_BASE;
+const API_BASE = "http://127.0.0.1:8000";
 
 // A bare "Failed to fetch" from the browser's fetch() is almost always
 // either (a) the backend is unreachable at API_BASE, or (b) the backend
@@ -45,6 +45,13 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+
+  // "Retry" on the summary screen. The ref is the real double-click guard
+  // (state updates are async, so two fast clicks could both see
+  // retrying === false); the state just drives the button's loading UI.
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState("");
+  const retryLockRef = useRef(false);
 
   // Offline mode state
   const [offlineBanks, setOfflineBanks] = useState([]);
@@ -222,19 +229,50 @@ function App() {
         throw new Error(body.detail || "Failed to create quiz session");
       }
 
-      const data = await response.json();
-      setSession(data);
-      setQuestion(data.first_question);
-      setAnsweredCount(0);
-      setResult(null);
-      setTimeLeft(data.time_limit * 60);
-      setStep("quiz");
-      cacheSessionForOffline(data); // fire-and-forget, doesn't block the quiz
+      beginSession(await response.json());
     } catch (err) {
       console.error(err);
       setError(describeFetchError(err));
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Shared by startSession and retryQuiz: enter a newly created session.
+  function beginSession(data) {
+    setSession(data);
+    setQuestion(data.first_question);
+    setAnsweredCount(0);
+    setResult(null);
+    setTimeLeft(data.time_limit * 60);
+    setStep("quiz");
+    cacheSessionForOffline(data); // fire-and-forget, doesn't block the quiz
+  }
+
+  // Retry from the summary screen: the server rebuilds the setup from the
+  // finished session (POST /sessions/{id}/retry) and returns a brand-new
+  // session, so the previous one is never touched.
+  async function retryQuiz() {
+    const current = sessionRef.current;
+    if (!current || retryLockRef.current) return;
+    if (!navigator.onLine) {
+      setRetryError(
+        "You're offline. Retry needs an internet connection to create a new quiz — " +
+          "you can still use Practice Offline from Home."
+      );
+      return;
+    }
+    retryLockRef.current = true;
+    setRetrying(true);
+    setRetryError("");
+    try {
+      beginSession(await apiFetchJson(`/sessions/${current.session_id}/retry`, { method: "POST" }));
+    } catch (err) {
+      console.error("Retry error:", err);
+      setRetryError(describeFetchError(err));
+    } finally {
+      retryLockRef.current = false;
+      setRetrying(false);
     }
   }
 
@@ -320,6 +358,7 @@ function App() {
     setProgress([]);
     setAnsweredCount(0);
     setError("");
+    setRetryError("");
   }
 
   // ---- Offline practice: entirely local, no network calls ----
@@ -714,6 +753,35 @@ function App() {
                   </div>
                 </div>
               ))}
+            </div>
+
+            <div className="mt-8">
+              <button
+                onClick={retryQuiz}
+                disabled={retrying}
+                aria-busy={retrying}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-accent bg-accent-soft px-6 py-3 font-semibold text-accent-ink transition hover:bg-accent/30 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-70 sm:inline-flex sm:w-auto"
+              >
+                {retrying ? (
+                  <>
+                    <span className="animate-spin-slow h-4 w-4 rounded-full border-2 border-accent-ink/40 border-t-accent-ink" />
+                    Creating new quiz...
+                  </>
+                ) : (
+                  <>🔁 Retry</>
+                )}
+              </button>
+              <p className="mt-2 text-xs text-faint">
+                Same setup, fresh questions. Your results so far are kept.
+              </p>
+              {retryError && (
+                <p
+                  role="alert"
+                  className="mt-3 rounded-xl border border-error-soft bg-error-soft/70 p-3 text-left text-sm text-error-text"
+                >
+                  {retryError}
+                </p>
+              )}
             </div>
 
             <button

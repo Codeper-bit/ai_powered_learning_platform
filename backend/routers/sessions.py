@@ -22,6 +22,13 @@ DIFFICULTY_RANK = {"easy": 1, "medium": 2, "hard": 3}
 # reassess whether the student has actually improved.
 WEAK_CONCEPT_STREAK_CAP = 3
 
+# Retry: how many previously-seen question texts / missed concepts are fed
+# to the generator as hints, and how long each question text may be. Bounds
+# the prompt size no matter how many attempts a student has piled up.
+RETRY_AVOID_QUESTIONS_MAX = 50
+RETRY_AVOID_QUESTION_CHARS = 160
+RETRY_FOCUS_CONCEPTS_MAX = 5
+
 
 def difficulty_rank(label: str) -> int:
     return DIFFICULTY_RANK.get((label or "").strip().lower(), 2)
@@ -54,7 +61,8 @@ async def _require_session_owner(db: asyncpg.Pool, session_id: int, user_id: int
     if owner is None:
         raise HTTPException(status_code=404, detail="Session not found")
     if owner != user_id:
-        raise HTTPException(status_code=403, detail="This session belongs to a different user")
+        raise HTTPException(
+            status_code=403, detail="This session belongs to a different user")
 
 
 async def _find_reusable_batch(
@@ -138,12 +146,19 @@ async def _clone_batch(
     )
 
 
-@router.post("", response_model=schemas.SessionResponse)
-async def create_session(
+async def _create_session(
+    db: asyncpg.Pool,
+    user_id: int,
     payload: schemas.SessionCreateRequest,
-    db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
-):
+    *,
+    use_cache: bool = True,
+    avoid_questions: list[str] | None = None,
+    focus_concepts: list[str] | None = None,
+) -> schemas.SessionResponse:
+    """Shared by POST /sessions and POST /sessions/{id}/retry. `use_cache`
+    is False for retry: the reuse layer below matches on subject/exam/
+    difficulty only, so it would happily hand back the very question set
+    the student just finished."""
     source_text = None
     subject = payload.subject
     if payload.document_id is not None:
@@ -152,19 +167,21 @@ async def create_session(
             payload.document_id,
         )
         if doc is None:
-            raise HTTPException(status_code=404, detail="Uploaded document not found")
+            raise HTTPException(
+                status_code=404, detail="Uploaded document not found")
         # A document's content is study material the uploader chose to
         # share with the AI, not with other students — quizzing on it must
         # stay confined to whoever uploaded it.
         if doc["user_id"] is not None and doc["user_id"] != user_id:
-            raise HTTPException(status_code=403, detail="This document belongs to a different user")
+            raise HTTPException(
+                status_code=403, detail="This document belongs to a different user")
         source_text = doc["content"]
         # Let the document drive the subject label when the user didn't set one
         if payload.subject in ("", "Mathematics"):
             subject = doc["filename"]
 
     reused_from = None
-    if payload.document_id is None:
+    if use_cache and payload.document_id is None:
         reused_from = await _find_reusable_batch(
             db,
             subject=subject,
@@ -187,6 +204,8 @@ async def create_session(
                 total_questions=payload.total_questions,
                 custom_request=payload.custom_request,
                 source_text=source_text,
+                avoid_questions=avoid_questions,
+                focus_concepts=focus_concepts,
             )
         except ValueError as e:
             raise HTTPException(status_code=502, detail=str(e))
@@ -207,7 +226,8 @@ async def create_session(
                 subject,
                 payload.topic,
                 payload.time_limit,
-                payload.total_questions if reused_from is not None else len(batch),
+                payload.total_questions if reused_from is not None else len(
+                    batch),
                 payload.min_difficulty,
                 payload.max_difficulty,
                 payload.custom_request,
@@ -237,7 +257,8 @@ async def create_session(
                         q.difficulty,
                         q.explanation,
                         q.misconception,
-                        json.dumps(q.option_insights) if q.option_insights else None,
+                        json.dumps(
+                            q.option_insights) if q.option_insights else None,
                     )
                     for position, q in enumerate(batch, start=1)
                 ]
@@ -297,8 +318,113 @@ async def create_session(
         exam_type=payload.exam_type,
         total_questions=total_generated,
         time_limit=payload.time_limit,
-        source="document" if source_text else ("cached" if reused_from is not None else "topic"),
+        source="document" if source_text else (
+            "cached" if reused_from is not None else "topic"),
         first_question=first_question,
+    )
+
+
+@router.post("", response_model=schemas.SessionResponse)
+async def create_session(
+    payload: schemas.SessionCreateRequest,
+    db: asyncpg.Pool = Depends(get_db),
+    user_id: int = Depends(get_current_user),
+):
+    return await _create_session(db, user_id, payload)
+
+
+@router.post("/{session_id}/retry", response_model=schemas.SessionResponse)
+async def retry_session(
+    session_id: int,
+    db: asyncpg.Pool = Depends(get_db),
+    user_id: int = Depends(get_current_user),
+):
+    """Start a NEW session with the same setup as `session_id`.
+
+    - The original session, its questions and its attempts are only read,
+      never written: the new quiz is a fresh quiz_sessions row (own id, own
+      questions), so history the diagnostic engine relies on stays intact.
+    - Configuration comes from the stored session row, not from the client,
+      so the request body can't alter it and no setup form is needed.
+    - Ownership is enforced here (403/404) before anything is read.
+    """
+    await _require_session_owner(db, session_id, user_id)
+
+    original = await db.fetchrow(
+        """
+        SELECT document_id, exam_type, subject, topic, time_limit,
+               total_questions, min_difficulty, max_difficulty, custom_request
+        FROM quiz_sessions WHERE id = $1 AND user_id = $2
+        """,
+        session_id,
+        user_id,
+    )
+
+    # Concepts missed in the attempt being retried, most-missed first. Only
+    # a hint for question generation — whether a concept counts as WEAK for
+    # adaptive selection is still decided by concept_profile, across all
+    # sessions, exactly as for any other quiz.
+    missed = await db.fetch(
+        """
+        SELECT q.concept
+        FROM attempts a
+        JOIN questions q ON q.id = a.question_id
+        WHERE a.user_id = $1 AND q.session_id = $2
+          AND a.is_correct = false AND q.concept IS NOT NULL
+        GROUP BY q.concept
+        ORDER BY COUNT(*) DESC, q.concept
+        LIMIT $3
+        """,
+        user_id,
+        session_id,
+        RETRY_FOCUS_CONCEPTS_MAX,
+    )
+
+    # Questions this student has already been given for this same setup
+    # (across earlier attempts too, so a 3rd try doesn't repeat the 1st).
+    seen = await db.fetch(
+        """
+        SELECT q.question
+        FROM questions q
+        JOIN quiz_sessions s ON s.id = q.session_id
+        WHERE s.user_id = $1
+          AND s.subject = $2
+          AND s.exam_type IS NOT DISTINCT FROM $3
+          AND s.topic IS NOT DISTINCT FROM $4
+          AND s.document_id IS NOT DISTINCT FROM $5
+        GROUP BY q.question
+        ORDER BY MAX(q.id) DESC
+        LIMIT $6
+        """,
+        user_id,
+        original["subject"],
+        original["exam_type"],
+        original["topic"],
+        original["document_id"],
+        RETRY_AVOID_QUESTIONS_MAX,
+    )
+
+    payload = schemas.SessionCreateRequest(
+        exam_type=original["exam_type"],
+        subject=original["subject"],
+        topic=original["topic"],
+        time_limit=original["time_limit"] or 30,
+        total_questions=original["total_questions"],
+        min_difficulty=original["min_difficulty"],
+        max_difficulty=original["max_difficulty"],
+        custom_request=original["custom_request"],
+        document_id=original["document_id"],
+    )
+
+    return await _create_session(
+        db,
+        user_id,
+        payload,
+        use_cache=False,
+        avoid_questions=[
+            " ".join(r["question"].split())[:RETRY_AVOID_QUESTION_CHARS] for r in seen
+        ],
+        focus_concepts=[r["concept"] for r in missed],
     )
 
 
@@ -350,7 +476,8 @@ async def get_next_question(
         target_rank = 1
     else:
         current_rank = difficulty_rank(last_attempt["difficulty"])
-        target_rank = current_rank + 1 if last_attempt["is_correct"] else current_rank - 1
+        target_rank = current_rank + \
+            1 if last_attempt["is_correct"] else current_rank - 1
         target_rank = max(1, min(3, target_rank))
 
     # --- Concept-aware layer ---------------------------------------------
@@ -382,13 +509,15 @@ async def get_next_question(
             weak_concepts,
         )
         if (recent_weak_streak or 0) < WEAK_CONCEPT_STREAK_CAP:
-            targeted = [row for row in unattempted if row["concept"] in weak_concepts]
+            targeted = [
+                row for row in unattempted if row["concept"] in weak_concepts]
             if targeted:
                 candidate_pool = targeted
 
     best = min(
         candidate_pool,
-        key=lambda row: (abs(difficulty_rank(row["difficulty"]) - target_rank), row["position"]),
+        key=lambda row: (
+            abs(difficulty_rank(row["difficulty"]) - target_rank), row["position"]),
     )
 
     return {

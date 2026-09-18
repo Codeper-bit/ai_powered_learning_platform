@@ -106,7 +106,7 @@ function Login({ apiBase, onAuthenticated }) {
           </div>
           {mode === "register" && (
             <div>
-              <label className={labelClass}>Email</label>
+              <label className={labelClass}>Email (optional)</label>
               <input
                 type="email"
                 value={email}

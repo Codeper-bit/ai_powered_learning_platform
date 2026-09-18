@@ -8,7 +8,6 @@ from groq import AsyncGroq
 import schemas
 import os
 from dotenv import load_dotenv
-from config import settings
 from text_extraction import sample_for_prompt
 
 load_dotenv()
@@ -36,6 +35,8 @@ def _build_batch_prompt(
     total_questions: int,
     custom_request: Optional[str],
     source_text: Optional[str],
+    avoid_questions: Optional[List[str]] = None,
+    focus_concepts: Optional[List[str]] = None,
 ) -> str:
     topic_line = f"Topic focus: {topic}\n    " if topic else ""
     custom_line = f"Extra instructions from the student: {custom_request}\n    " if custom_request else ""
@@ -52,13 +53,37 @@ def _build_batch_prompt(
     else:
         source_block = ""
 
+    # Only populated by "Retry" (routers/sessions.py). Empty for a normal
+    # quiz, so the prompt for every other caller is unchanged.
+    retry_block = ""
+    if focus_concepts:
+        retry_block += f"""
+    The student previously struggled with these concepts: {", ".join(focus_concepts)}.
+    Make roughly a third to a half of the questions test these concepts, using
+    the concept name exactly as written above in each question's "concept" field.
+    For these concepts only, you may ask more than one question (use a different
+    "sub_concept" each time) - this is the one exception to the "do not repeat
+    the same concept" rule below. Do NOT make the quiz easier: keep the same
+    difficulty spread across the requested range.
+    """
+    if avoid_questions:
+        listed = "\n".join(f"    - {q}" for q in avoid_questions)
+        retry_block += f"""
+    The student has already seen the questions listed below. Do not repeat or
+    lightly reword any of them - write new questions (testing the same ideas
+    with different problems is fine).
+    ---QUESTIONS ALREADY SEEN---
+{listed}
+    ---END QUESTIONS ALREADY SEEN---
+    """
+
     return f"""
     You are an expert exam-prep tutor writing questions for a student.
 
     Exam type: {exam_type}
     Subject: {subject}
     {topic_line}Difficulty range: from "{min_difficulty}" up to "{max_difficulty}"
-    {custom_line}{source_block}
+    {custom_line}{source_block}{retry_block}
     Generate exactly {total_questions} multiple-choice questions.
     - Spread the difficulty roughly evenly across the requested range (don't make them all the same difficulty).
     - Each question must have exactly 4 options.
@@ -102,6 +127,8 @@ async def generate_question_batch(
     total_questions: int,
     custom_request: Optional[str] = None,
     source_text: Optional[str] = None,
+    avoid_questions: Optional[List[str]] = None,
+    focus_concepts: Optional[List[str]] = None,
 ) -> List[schemas.DynamicQuestion]:
     """Generate a full batch of questions for one quiz_session in a single AI call.
 
@@ -118,6 +145,7 @@ async def generate_question_batch(
     prompt = _build_batch_prompt(
         exam_type, subject, topic, min_difficulty, max_difficulty,
         total_questions, custom_request, source_text,
+        avoid_questions, focus_concepts,
     )
 
     try:

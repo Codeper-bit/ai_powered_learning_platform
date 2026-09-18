@@ -58,7 +58,9 @@ class DynamicQuestion(BaseModel):
     difficulty: str
     explanation: Optional[str] = None
     misconception: Optional[str] = None
-
+    # Optional map of option text -> what selecting it suggests the student
+    # is confused about. Richer than the single `misconception` string when
+    # the model provides it; absent/empty for older or reused questions.
     option_insights: Optional[dict] = None
 
     model_config = ConfigDict(extra="ignore")
@@ -91,7 +93,9 @@ class MisconceptionFeedback(BaseModel):
     identified_misconception: Optional[str] = None
     confidence_score: Optional[float] = 0.0
     targeted_explanation: Optional[str] = None
-
+    # Human-readable evidence label so the UI never overstates a single
+    # wrong answer as a proven weakness. One of:
+    # "Needs more evidence" | "Possible misconception" | "Likely weakness"
     confidence_label: Optional[str] = None
 
 
@@ -143,8 +147,7 @@ class AuthResponse(BaseModel):
 class TodoCreateRequest(BaseModel):
     title: str
     subject: Optional[str] = None
-    # parsed from an ISO date string, e.g. "2026-09-20"
-    due_date: Optional[date] = None
+    due_date: Optional[date] = None     # parsed from an ISO date string, e.g. "2026-09-20"
     priority: str = "medium"            # low | medium | high
 
     @field_validator("title", mode="before")
@@ -205,9 +208,12 @@ class ConceptMastery(BaseModel):
     attempts: int
     correct: int
     accuracy: float
-
+    # One of: "NEW" | "DEVELOPING" | "WEAK" | "MASTERED". Requires a minimum
+    # amount of evidence before ever being NEW/MASTERED/WEAK — see
+    # routers/progress.py for the thresholds.
     status: str = "NEW"
-
+    # The most frequently recurring likely misconception for this concept,
+    # drawn only from attempts actually stored — never fabricated.
     suspected_misconception: Optional[str] = None
     misconception_confidence: Optional[str] = None
 
@@ -223,7 +229,9 @@ class RecoveryRecommendation(BaseModel):
     suspected_misconception: Optional[str] = None
     misconception_confidence: Optional[str] = None
     recommended_question_count: int = 5
-
+    # Real before/after accuracy on this concept, only populated once there
+    # are genuinely two distinct time windows of attempts to compare —
+    # never fabricated or estimated.
     accuracy_before: Optional[float] = None
     accuracy_after: Optional[float] = None
 
