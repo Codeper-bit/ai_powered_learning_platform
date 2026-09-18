@@ -21,17 +21,11 @@ import { apiFetch, apiFetchJson, describeFetchError } from "./api";
 
 const API_BASE = "http://127.0.0.1:8000";
 
-// A bare "Failed to fetch" from the browser's fetch() is almost always
-// either (a) the backend is unreachable at API_BASE, or (b) the backend
-// responded but CORS_ORIGINS on the backend doesn't include this site's
-// origin, so the browser threw the response away. Surface that instead of
-// a generic message so it's actionable without opening devtools.
 
 
 function App() {
-  // login -> home -> setup -> quiz -> summary
-  //                -> offlinePractice -> offlineQuiz -> offlineSummary
-  //                -> dashboard (learning curve + overall impression, cross-session)
+ 
+  
   const [step, setStep] = useState("login");
   const [user, setUser] = useState(null); // { user_id, name }
 
@@ -70,10 +64,7 @@ function App() {
   userRef.current = user;
 
   // ---- Offline sync: replay queued offline answers against the real
-  // /attempts endpoint as soon as we're back online. The backend re-grades
-  // and re-validates every one of them (see routers/attempts.py) — nothing
-  // here is trusted as a final score, it's just "try to deliver this
-  // answer now that we can."
+ 
   const syncPendingAttempts = useCallback(async () => {
     const currentUser = userRef.current;
     if (!currentUser || syncing) return;
