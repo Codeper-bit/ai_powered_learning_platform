@@ -8,6 +8,7 @@ from groq import AsyncGroq
 import schemas
 import os
 from dotenv import load_dotenv
+from config import settings
 from text_extraction import sample_for_prompt
 
 load_dotenv()

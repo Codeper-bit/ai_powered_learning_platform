@@ -19,7 +19,7 @@ import {
 import { apiFetch, describeFetchError } from "./api";
 
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE;
 
 // A bare "Failed to fetch" from the browser's fetch() is almost always
 // either (a) the backend is unreachable at API_BASE, or (b) the backend
