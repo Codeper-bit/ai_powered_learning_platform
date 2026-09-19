@@ -1,3 +1,4 @@
+import re
 from datetime import date
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -82,9 +83,28 @@ class AnswerSubmission(BaseModel):
     selected_answer: str
     # Set by the client when this submission is being replayed from the
     # offline sync queue rather than answered live. Purely informational —
-    # grading and dedup (UNIQUE user_id+question_id) work identically
-    # either way, so this can never be used to bypass validation.
+    # grading and dedup work identically either way, so this can never be
+    # used to bypass validation.
     from_offline_sync: bool = False
+    # Idempotency token for this ONE attempt (a client-minted UUID). The same
+    # key re-sent = a duplicate of the same attempt (stored result returned,
+    # nothing new recorded); a new key on an already-answered question = a
+    # genuinely new attempt. Omitted = "one live answer per question" (see
+    # routers/attempts.py). It only ever decides duplicate-or-not — grading
+    # is always done server-side.
+    attempt_key: Optional[str] = None
+
+    @field_validator("attempt_key", mode="before")
+    @classmethod
+    def clean_attempt_key(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        if not v:
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", v):
+            raise ValueError("attempt_key must be 8-64 characters: letters, digits, '-' or '_'")
+        return v
 
     model_config = ConfigDict(extra="ignore")
 

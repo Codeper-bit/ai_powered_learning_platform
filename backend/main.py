@@ -51,11 +51,35 @@ app.include_router(progress.router)
 app.include_router(todos.router)
 
 
+def _cors_headers_for(request) -> dict:
+    """CORS headers for a response built OUTSIDE CORSMiddleware.
+
+    Starlette runs the catch-all Exception handler in ServerErrorMiddleware,
+    which sits above CORSMiddleware, so a crash's 500 used to reach the
+    browser with no Access-Control-Allow-Origin. The browser then reported a
+    "CORS error" (and fetch threw a TypeError), hiding the real 500 behind a
+    misleading message. Only the one configured origin is ever echoed back.
+    """
+    origin = request.headers.get("origin")
+    allowed = os.getenv("CORS_ORIGINS")
+    if origin and allowed and origin.rstrip("/") == allowed.rstrip("/"):
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+    return {}
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request, exc):
     logger.exception("Unhandled error on %s %s",
                      request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "Something went wrong. Please try again."})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Something went wrong. Please try again."},
+        headers=_cors_headers_for(request),
+    )
 
 
 @app.exception_handler(StarletteHTTPException)

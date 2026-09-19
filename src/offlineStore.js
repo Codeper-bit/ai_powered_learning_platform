@@ -71,9 +71,11 @@ export function deleteOfflineBank(userId, bankId) {
 // against POST /attempts (the same endpoint used for live answers) as soon
 // as the client is back online. The backend re-grades and re-validates
 // every one of them itself — nothing about the score is ever trusted from
-// this queue — and the existing UNIQUE(user_id, question_id) constraint on
-// `attempts` makes re-sending an already-synced item a harmless no-op
-// instead of a duplicate.
+// this queue. Each queued answer carries its own `attemptKey`, minted when
+// the student answers: re-sending an already-synced item re-sends the same
+// key, which the server recognises as a duplicate (a harmless no-op), while
+// answering the same question again later — e.g. replaying a saved bank —
+// mints a new key and is stored as a separate, additional attempt.
 
 const SYNC_QUEUE_KEY_PREFIX = "aiTutorSyncQueue:";
 
@@ -99,13 +101,25 @@ function saveSyncQueue(userId, queue) {
   }
 }
 
+/** A fresh idempotency key for ONE answer. Call once per answer the student
+ * gives, never per network attempt. */
+export function newAttemptKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  // randomUUID needs a secure context (https/localhost); fall back otherwise.
+  const rand = () => Math.random().toString(36).slice(2, 10);
+  return `${Date.now().toString(36)}-${rand()}-${rand()}-${rand()}`;
+}
+
 /** Queue one offline answer for later sync. `clientId` de-dupes entries
- * within the local queue itself (in case the same question is queued
- * twice before a sync ever runs); the server-side UNIQUE constraint is the
- * backstop against duplicates once it reaches the backend. */
+ * within the local queue itself: the same answer queued twice is one item,
+ * but the same QUESTION answered again (a bank replay) has a different
+ * attemptKey and is queued as its own item — it must not be dropped. The
+ * server's attempt_key check is the backstop once it reaches the backend.
+ * Items queued by older versions have no attemptKey and keep the old
+ * per-question id. */
 export function enqueueSyncItem(userId, item) {
   const existing = loadSyncQueue(userId);
-  const clientId = `${item.questionId}`;
+  const clientId = item.attemptKey || `${item.questionId}`;
   if (existing.some((q) => q.clientId === clientId)) return existing;
   const updated = [...existing, { ...item, clientId, queuedAt: new Date().toISOString() }];
   saveSyncQueue(userId, updated);

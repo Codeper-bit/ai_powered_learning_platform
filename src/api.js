@@ -10,10 +10,11 @@ export const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000"
 export function describeFetchError(err) {
   if (err instanceof TypeError) {
     return (
-      `Could not reach the server at ${API_BASE}. This is usually a CORS ` +
-      `or wrong-backend-URL problem — check that VITE_API_BASE (frontend) ` +
-      `points at this backend, and that CORS_ORIGINS (backend) includes ` +
-      `this site's URL.`
+      `Could not reach the server at ${API_BASE}. The backend may be stopped ` +
+      `or restarting — check its terminal for an error first. Otherwise this is ` +
+      `usually a CORS or wrong-backend-URL problem: check that VITE_API_BASE ` +
+      `(frontend) points at this backend, and that CORS_ORIGINS (backend) ` +
+      `includes this site's URL.`
     );
   }
   return err.message || "Something went wrong. Please try again.";

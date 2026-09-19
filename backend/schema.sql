@@ -90,15 +90,53 @@ CREATE TABLE IF NOT EXISTS attempts (
     -- True when this row arrived via the offline-sync queue rather than a
     -- live submission. Kept for transparency/debugging; scoring is always
     -- recalculated server-side regardless of this flag.
-    synced_from_offline BOOLEAN NOT NULL DEFAULT false,
-    UNIQUE (user_id, question_id)    -- one attempt per question per user;
-                                      -- makes double-submit (including a
-                                      -- duplicate offline-sync retry) safe
-                                      -- via ON CONFLICT
+    synced_from_offline BOOLEAN NOT NULL DEFAULT false
+    -- Uniqueness lives in the two partial indexes below (attempt_key).
 );
 ALTER TABLE attempts ADD COLUMN IF NOT EXISTS misconception TEXT;
 ALTER TABLE attempts ADD COLUMN IF NOT EXISTS misconception_confidence TEXT;
 ALTER TABLE attempts ADD COLUMN IF NOT EXISTS synced_from_offline BOOLEAN NOT NULL DEFAULT false;
+
+-- Idempotency token for ONE genuine attempt, minted by the client when the
+-- student answers (a UUID). Re-sending the same submission (a network retry,
+-- a duplicate offline sync) re-sends the same key and is recognised as a
+-- duplicate; answering the same question again later gets a NEW key and is
+-- stored as a NEW row, so earlier attempts are never overwritten.
+-- NULL = submitted without a key (live online answers, older clients, items
+-- queued before this column existed).
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS attempt_key TEXT;
+
+-- These two indexes REPLACE the old UNIQUE (user_id, question_id), which
+-- made "answer the same question again" overwrite the earlier attempt.
+--  1) keyed submissions: one row per (user, key)  -> duplicate syncs are no-ops
+--  2) keyless submissions keep the old one-row-per-question protection
+--     (existing rows are all keyless and already satisfy it)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_attempts_user_attempt_key
+    ON attempts (user_id, attempt_key) WHERE attempt_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_attempts_user_question_unkeyed
+    ON attempts (user_id, question_id) WHERE attempt_key IS NULL;
+
+-- Drop the old UNIQUE (user_id, question_id) constraint from databases that
+-- already have it (looked up by its columns, so it works whatever it was
+-- named). Runs only after the replacement indexes exist above; a no-op on
+-- fresh databases and on re-runs. Rows are never touched.
+DO $$
+DECLARE con RECORD;
+BEGIN
+    FOR con IN
+        SELECT c.conname
+        FROM pg_constraint c
+        WHERE c.conrelid = 'attempts'::regclass
+          AND c.contype = 'u'
+          AND (
+              SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+              FROM pg_attribute a
+              WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+          ) = ARRAY['question_id', 'user_id']
+    LOOP
+        EXECUTE format('ALTER TABLE attempts DROP CONSTRAINT %I', con.conname);
+    END LOOP;
+END $$;
 
 CREATE TABLE IF NOT EXISTS todos (
     id SERIAL PRIMARY KEY,

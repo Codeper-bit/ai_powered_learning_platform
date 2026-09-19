@@ -12,6 +12,7 @@ import {
   loadOfflineBanks,
   saveOfflineBank,
   enqueueSyncItem,
+  newAttemptKey,
   loadSyncQueue,
   removeSyncItems,
   countPendingSync,
@@ -21,11 +22,17 @@ import { apiFetch, apiFetchJson, describeFetchError } from "./api";
 
 const API_BASE = "http://127.0.0.1:8000";
 
+// A bare "Failed to fetch" from the browser's fetch() is almost always
+// either (a) the backend is unreachable at API_BASE, or (b) the backend
+// responded but CORS_ORIGINS on the backend doesn't include this site's
+// origin, so the browser threw the response away. Surface that instead of
+// a generic message so it's actionable without opening devtools.
 
 
 function App() {
- 
-  
+  // login -> home -> setup -> quiz -> summary
+  //                -> offlinePractice -> offlineQuiz -> offlineSummary
+  //                -> dashboard (learning curve + overall impression, cross-session)
   const [step, setStep] = useState("login");
   const [user, setUser] = useState(null); // { user_id, name }
 
@@ -64,7 +71,10 @@ function App() {
   userRef.current = user;
 
   // ---- Offline sync: replay queued offline answers against the real
- 
+  // /attempts endpoint as soon as we're back online. The backend re-grades
+  // and re-validates every one of them (see routers/attempts.py) — nothing
+  // here is trusted as a final score, it's just "try to deliver this
+  // answer now that we can."
   const syncPendingAttempts = useCallback(async () => {
     const currentUser = userRef.current;
     if (!currentUser || syncing) return;
@@ -83,12 +93,20 @@ function App() {
             question_id: item.questionId,
             selected_answer: item.answer,
             from_offline_sync: true,
+            // Same key on every re-send of this answer, so a retry after a
+            // lost response can't record it twice. (Absent on items queued
+            // by older versions.)
+            attempt_key: item.attemptKey,
           }),
         });
-        // Any response the server actually returned (even a 4xx like "question
-        // not found") means this item is resolved and shouldn't be retried
-        // forever; only a network failure (thrown below) leaves it queued.
-        if (response) synced.push(item.clientId);
+        // Delivered (2xx) or permanently rejected (4xx like "question not
+        // found") means this item is resolved and shouldn't be retried
+        // forever. A network failure (thrown below) or a server-side/
+        // temporary error (5xx, 408, 429) leaves it queued — safe to
+        // re-send now that the server de-dupes by attempt_key.
+        const permanent = response.status >= 400 && response.status < 500
+          && response.status !== 408 && response.status !== 429;
+        if (response.ok || permanent) synced.push(item.clientId);
       } catch (err) {
         // Still offline, or the request failed outright — leave this (and
         // everything after it, since order doesn't matter here) queued for
@@ -387,6 +405,7 @@ function App() {
       const updatedQueue = enqueueSyncItem(user.user_id, {
         questionId,
         answer,
+        attemptKey: newAttemptKey(), // one key per answer the student gives
       });
       setPendingSyncCount(updatedQueue.length);
     }

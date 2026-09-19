@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import random
+import re
 from typing import List, Optional
 
 from groq import AsyncGroq
@@ -118,6 +120,43 @@ def _build_batch_prompt(
     """
 
 
+# --- Answer-position shuffling ------------------------------------------------
+# Models overwhelmingly put the correct answer first (the prompt's own example
+# does too), so a student could score well by always picking "A". Options are
+# therefore shuffled here, in code, after generation. Grading compares answer
+# TEXT (never a letter/position) and option_insights is keyed by option text,
+# so reordering is safe -- except for options that refer to other options by
+# position, which would be corrupted by a shuffle.
+_POSITIONAL_OPTION = re.compile(
+    r"\b[A-D]\s*(?:,|and|&|or)\s*[A-D]\b"      # "A and C", "B, D"
+    r"|\b[A-D]\s+(?i:only)\b|\b(?i:only)\s+[A-D]\b"   # "B only"
+    r"|\((?:[A-D])\)"                                     # "(A)"
+    r"|\b(?i:options?|choices?)\s+[A-D]\b",              # "Option B"
+)
+# Not positional by themselves, but only make sense as the LAST option.
+_CLOSING_OPTION = re.compile(
+    r"^\s*(?:all|none|neither|both)\b.{0,20}\b(?:above|these|them)\b", re.IGNORECASE
+)
+
+
+def shuffle_options(options: List[str], correct_answer: str) -> List[str]:
+    """Return `options` in random order (a new list). Left untouched when it
+    can't be done safely: correct answer not among the options, or an option
+    that refers to another by letter. "All/None of the above"-style options
+    stay last."""
+    if not isinstance(options, list) or len(options) < 2:
+        return options
+    texts = [str(o) for o in options]
+    if str(correct_answer).strip() not in {t.strip() for t in texts}:
+        return options
+    if any(_POSITIONAL_OPTION.search(t) for t in texts):
+        return options
+    movable = [o for o, t in zip(options, texts) if not _CLOSING_OPTION.match(t)]
+    closing = [o for o, t in zip(options, texts) if _CLOSING_OPTION.match(t)]
+    random.shuffle(movable)
+    return movable + closing
+
+
 async def generate_question_batch(
     exam_type: str,
     subject: str,
@@ -193,7 +232,7 @@ async def generate_question_batch(
             questions.append(
                 schemas.DynamicQuestion(
                     question=item["question"],
-                    options=item["options"],
+                    options=shuffle_options(item["options"], item["correct_answer"]),
                     correct_answer=item["correct_answer"],
                     concept=item.get("concept", subject),
                     difficulty=item.get("difficulty", min_difficulty),

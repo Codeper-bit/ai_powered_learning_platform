@@ -67,7 +67,7 @@ async def get_progress_overview(
         misconception, confidence = (None, None)
         if c["correct"] < c["attempts"]:
             misconception, confidence = await concept_profile.get_concept_misconception(
-                db, user_id, c["concept"]
+                db, user_id, c["concept"], c["variants"]
             )
         concept_mastery.append(
             schemas.ConceptMastery(
@@ -170,19 +170,19 @@ async def get_recovery_recommendation(
         SELECT a.is_correct
         FROM attempts a
         JOIN questions q ON a.question_id = q.id
-        WHERE a.user_id = $1 AND q.concept = $2
-        ORDER BY a.created_at DESC
+        WHERE a.user_id = $1 AND q.concept = ANY($2::text[])
+        ORDER BY a.created_at DESC, a.id DESC
         LIMIT $3
         """,
         user_id,
-        concept,
+        target["variants"],
         RECENT_WINDOW,
     )
     recent_total = len(recent_rows)
     recent_incorrect = sum(1 for r in recent_rows if not r["is_correct"])
 
     misconception, confidence = await concept_profile.get_concept_misconception(
-        db, user_id, concept
+        db, user_id, concept, target["variants"]
     )
 
     accuracy_before = None
@@ -193,11 +193,11 @@ async def get_recovery_recommendation(
             SELECT a.is_correct
             FROM attempts a
             JOIN questions q ON a.question_id = q.id
-            WHERE a.user_id = $1 AND q.concept = $2
-            ORDER BY a.created_at ASC
+            WHERE a.user_id = $1 AND q.concept = ANY($2::text[])
+            ORDER BY a.created_at ASC, a.id ASC
             """,
             user_id,
-            concept,
+            target["variants"],
         )
         mid = len(all_rows) // 2
         first_half, second_half = all_rows[:mid], all_rows[mid:]

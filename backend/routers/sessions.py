@@ -61,8 +61,7 @@ async def _require_session_owner(db: asyncpg.Pool, session_id: int, user_id: int
     if owner is None:
         raise HTTPException(status_code=404, detail="Session not found")
     if owner != user_id:
-        raise HTTPException(
-            status_code=403, detail="This session belongs to a different user")
+        raise HTTPException(status_code=403, detail="This session belongs to a different user")
 
 
 async def _find_reusable_batch(
@@ -167,14 +166,12 @@ async def _create_session(
             payload.document_id,
         )
         if doc is None:
-            raise HTTPException(
-                status_code=404, detail="Uploaded document not found")
+            raise HTTPException(status_code=404, detail="Uploaded document not found")
         # A document's content is study material the uploader chose to
         # share with the AI, not with other students — quizzing on it must
         # stay confined to whoever uploaded it.
         if doc["user_id"] is not None and doc["user_id"] != user_id:
-            raise HTTPException(
-                status_code=403, detail="This document belongs to a different user")
+            raise HTTPException(status_code=403, detail="This document belongs to a different user")
         source_text = doc["content"]
         # Let the document drive the subject label when the user didn't set one
         if payload.subject in ("", "Mathematics"):
@@ -226,8 +223,7 @@ async def _create_session(
                 subject,
                 payload.topic,
                 payload.time_limit,
-                payload.total_questions if reused_from is not None else len(
-                    batch),
+                payload.total_questions if reused_from is not None else len(batch),
                 payload.min_difficulty,
                 payload.max_difficulty,
                 payload.custom_request,
@@ -257,8 +253,7 @@ async def _create_session(
                         q.difficulty,
                         q.explanation,
                         q.misconception,
-                        json.dumps(
-                            q.option_insights) if q.option_insights else None,
+                        json.dumps(q.option_insights) if q.option_insights else None,
                     )
                     for position, q in enumerate(batch, start=1)
                 ]
@@ -318,8 +313,7 @@ async def _create_session(
         exam_type=payload.exam_type,
         total_questions=total_generated,
         time_limit=payload.time_limit,
-        source="document" if source_text else (
-            "cached" if reused_from is not None else "topic"),
+        source="document" if source_text else ("cached" if reused_from is not None else "topic"),
         first_question=first_question,
     )
 
@@ -404,6 +398,14 @@ async def retry_session(
         RETRY_AVOID_QUESTIONS_MAX,
     )
 
+    # Two spellings of one concept ("Kinematics"/"kinematics") are one focus.
+    focus_concepts, seen_keys = [], set()
+    for r in missed:
+        key = concept_profile.normalize_concept(r["concept"])
+        if key not in seen_keys:
+            seen_keys.add(key)
+            focus_concepts.append(r["concept"])
+
     payload = schemas.SessionCreateRequest(
         exam_type=original["exam_type"],
         subject=original["subject"],
@@ -424,7 +426,7 @@ async def retry_session(
         avoid_questions=[
             " ".join(r["question"].split())[:RETRY_AVOID_QUESTION_CHARS] for r in seen
         ],
-        focus_concepts=[r["concept"] for r in missed],
+        focus_concepts=focus_concepts,
     )
 
 
@@ -476,8 +478,7 @@ async def get_next_question(
         target_rank = 1
     else:
         current_rank = difficulty_rank(last_attempt["difficulty"])
-        target_rank = current_rank + \
-            1 if last_attempt["is_correct"] else current_rank - 1
+        target_rank = current_rank + 1 if last_attempt["is_correct"] else current_rank - 1
         target_rank = max(1, min(3, target_rank))
 
     # --- Concept-aware layer ---------------------------------------------
@@ -491,33 +492,32 @@ async def get_next_question(
     candidate_pool = unattempted
     weak_concepts = await concept_profile.get_weak_concepts(db, user_id)
     if weak_concepts:
-        recent_weak_streak = await db.fetchval(
+        # Compared by normalized key, so "quadratic equation" in a new batch
+        # still matches a WEAK "Quadratic Equations" from an earlier one.
+        norm = concept_profile.normalize_concept
+        weak_keys = {norm(c) for c in weak_concepts}
+        recent_rows = await db.fetch(
             """
-            SELECT COUNT(*) FROM (
-                SELECT q.concept
-                FROM attempts a
-                JOIN questions q ON a.question_id = q.id
-                WHERE a.user_id = $1 AND q.session_id = $2
-                ORDER BY a.created_at DESC
-                LIMIT $3
-            ) recent
-            WHERE recent.concept = ANY($4::text[])
+            SELECT q.concept
+            FROM attempts a
+            JOIN questions q ON a.question_id = q.id
+            WHERE a.user_id = $1 AND q.session_id = $2
+            ORDER BY a.created_at DESC
+            LIMIT $3
             """,
             user_id,
             session_id,
             WEAK_CONCEPT_STREAK_CAP,
-            weak_concepts,
         )
-        if (recent_weak_streak or 0) < WEAK_CONCEPT_STREAK_CAP:
-            targeted = [
-                row for row in unattempted if row["concept"] in weak_concepts]
+        recent_weak_streak = sum(1 for r in recent_rows if norm(r["concept"]) in weak_keys)
+        if recent_weak_streak < WEAK_CONCEPT_STREAK_CAP:
+            targeted = [row for row in unattempted if norm(row["concept"]) in weak_keys]
             if targeted:
                 candidate_pool = targeted
 
     best = min(
         candidate_pool,
-        key=lambda row: (
-            abs(difficulty_rank(row["difficulty"]) - target_rank), row["position"]),
+        key=lambda row: (abs(difficulty_rank(row["difficulty"]) - target_rank), row["position"]),
     )
 
     return {
