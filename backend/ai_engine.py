@@ -157,6 +157,29 @@ def shuffle_options(options: List[str], correct_answer: str) -> List[str]:
     return movable + closing
 
 
+# --- Output budget ------------------------------------------------------------
+# QUESTION_GEN_MODEL is a reasoning model: its hidden reasoning tokens count
+# against the completion limit. With no explicit limit, a long prompt (a
+# document, or Retry's extra instructions) could burn the default budget
+# before the JSON was finished, and Groq answered 400 json_validate_failed
+# ("max completion tokens reached before generating a valid document").
+# So: set the limit explicitly (scaled to the batch), keep reasoning short —
+# writing quiz JSON needs little deliberation — and, if the output is still
+# cut off, retry once with double the budget.
+MAX_COMPLETION_TOKENS_CAP = 60000
+
+
+def _completion_budget(total_questions: int) -> int:
+    """~300 tokens of JSON per question (question, options, explanation,
+    misconception, option_insights) x safety margin, plus room for reasoning."""
+    return min(32000, 6000 + 500 * total_questions)
+
+
+def _is_truncation_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "max completion tokens" in text or "json_validate_failed" in text
+
+
 async def generate_question_batch(
     exam_type: str,
     subject: str,
@@ -187,31 +210,47 @@ async def generate_question_batch(
         avoid_questions, focus_concepts,
     )
 
-    try:
-        response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=QUESTION_GEN_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                response_format={"type": "json_object"},
-            ),
-            timeout=AI_TIMEOUT_SECONDS,
-        )
-        raw_content = response.choices[0].message.content
-        data = json.loads(raw_content)
-    except asyncio.TimeoutError as exc:
-        logger.error("AI request timed out after %ss",
-                     AI_TIMEOUT_SECONDS)
-        raise ValueError(
-            "The AI provider took too long to respond. Please try again.") from exc
-    except json.JSONDecodeError as exc:
-        logger.error("AI returned invalid JSON: %s", exc)
-        raise ValueError(
-            "The AI returned a malformed response. Please try again.") from exc
-    except Exception as exc:
-        logger.error("AI request failed: %s", exc)
-        raise ValueError(
-            "Could not reach the AI provider. Please try again.") from exc
+    budget = _completion_budget(total_questions)
+    for attempt in (1, 2):
+        try:
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=QUESTION_GEN_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    response_format={"type": "json_object"},
+                    max_completion_tokens=budget,
+                    # via extra_body so it works whatever groq SDK version is installed
+                    extra_body={"reasoning_effort": "low"},
+                ),
+                timeout=AI_TIMEOUT_SECONDS,
+            )
+            raw_content = response.choices[0].message.content
+            data = json.loads(raw_content)
+            break
+        except asyncio.TimeoutError as exc:
+            logger.error("AI request timed out after %ss",
+                         AI_TIMEOUT_SECONDS)
+            raise ValueError(
+                "The AI provider took too long to respond. Please try again.") from exc
+        except json.JSONDecodeError as exc:
+            logger.error("AI returned invalid JSON: %s", exc)
+            raise ValueError(
+                "The AI returned a malformed response. Please try again.") from exc
+        except Exception as exc:
+            if _is_truncation_error(exc):
+                if attempt == 1:
+                    budget = min(budget * 2, MAX_COMPLETION_TOKENS_CAP)
+                    logger.warning(
+                        "AI output was cut off; retrying once with a %s-token budget", budget)
+                    continue
+                logger.error("AI output cut off again at %s tokens: %s", budget, exc)
+                raise ValueError(
+                    "The AI ran out of space while writing this quiz. "
+                    "Try again, or ask for fewer questions.") from exc
+            logger.error("AI request failed: %s", exc)
+            raise ValueError(
+                "Could not reach the AI provider. Please try again.") from exc
 
     # The model is asked for a JSON object ({"questions": [...]}), but LLMs
     # don't always honor a wrapper shape perfectly — some responses come
