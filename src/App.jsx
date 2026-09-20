@@ -17,16 +17,7 @@ import {
   removeSyncItems,
   countPendingSync,
 } from "./offlineStore";
-import { apiFetch, apiFetchJson, describeFetchError } from "./api";
-
-
-const API_BASE = "http://127.0.0.1:8000";
-
-// A bare "Failed to fetch" from the browser's fetch() is almost always
-// either (a) the backend is unreachable at API_BASE, or (b) the backend
-// responded but CORS_ORIGINS on the backend doesn't include this site's
-// origin, so the browser threw the response away. Surface that instead of
-// a generic message so it's actionable without opening devtools.
+import { API_BASE, apiFetch, apiFetchJson, describeFetchError } from "./api";
 
 
 function App() {
