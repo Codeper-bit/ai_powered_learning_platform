@@ -11,6 +11,7 @@ import re
 import unicodedata
 
 import asyncpg
+from uuid import UUID
 
 # Minimum attempts on a concept before we're willing to call it WEAK or
 # MASTERED at all. Below this, status is always NEW/INSUFFICIENT_DATA or
@@ -72,7 +73,7 @@ def status_for(attempts: int, accuracy: float) -> str:
     return "DEVELOPING"
 
 
-async def get_concept_stats(db: asyncpg.Pool, user_id: int) -> list[dict]:
+async def get_concept_stats(db: asyncpg.Pool, user_id: UUID) -> list[dict]:
     """Every concept the student has ever attempted, with attempts/correct/
     accuracy/status, worst accuracy first. Pulled fresh from `attempts` each
     time rather than cached, so it's always consistent with what's actually
@@ -116,7 +117,7 @@ async def get_concept_stats(db: asyncpg.Pool, user_id: int) -> list[dict]:
     return out
 
 
-async def equivalent_concepts(db: asyncpg.Pool, user_id: int, concept: str) -> list[str]:
+async def equivalent_concepts(db: asyncpg.Pool, user_id: UUID, concept: str) -> list[str]:
     """Every raw concept name this student has attempts on that is the same
     concept as `concept` (always includes `concept` itself), for use in
     `q.concept = ANY(...)` filters."""
@@ -136,7 +137,7 @@ async def equivalent_concepts(db: asyncpg.Pool, user_id: int, concept: str) -> l
     return names
 
 
-async def get_weak_concepts(db: asyncpg.Pool, user_id: int, limit: int = 5) -> list[str]:
+async def get_weak_concepts(db: asyncpg.Pool, user_id: UUID, limit: int = 5) -> list[str]:
     """Concept names currently in WEAK status, weakest first. Requires
     MIN_ATTEMPTS_FOR_VERDICT worth of real evidence — never returns a
     concept just because a single question on it was missed."""
@@ -145,7 +146,7 @@ async def get_weak_concepts(db: asyncpg.Pool, user_id: int, limit: int = 5) -> l
 
 
 async def get_concept_misconception(
-    db: asyncpg.Pool, user_id: int, concept: str, variants: list[str] | None = None
+    db: asyncpg.Pool, user_id: UUID, concept: str, variants: list[str] | None = None
 ) -> tuple[str | None, str | None]:
     """The most frequently recurring stored misconception for this concept,
     plus a confidence label built the same way as the live one in

@@ -5,7 +5,18 @@
 -- columns/indexes added since it was first set up. Every statement here
 -- uses IF NOT EXISTS (tables, columns, indexes), so re-running this is
 -- always safe and never touches existing rows or drops data.
+--
+-- NOTE (Supabase Auth migration): this file only ADDS the new `profiles`
+-- table below — it does NOT change `documents`/`quiz_sessions`/`attempts`/
+-- `todos`.user_id from INTEGER to UUID, because that change is inherently
+-- NOT idempotent/non-destructive for a database with existing rows (an
+-- INTEGER can't be losslessly reinterpreted as a UUID). That change lives
+-- in supabase_migration.sql instead, as a one-time, explicitly-reviewed
+-- step — see MIGRATION.md before running it.
 
+-- Old custom-auth users table. Superseded by Supabase's own auth.users
+-- plus the `profiles` table below. Left in place (not dropped) until the
+-- FK migration in supabase_migration.sql runs — see MIGRATION.md.
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
@@ -14,6 +25,46 @@ CREATE TABLE IF NOT EXISTS users (
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+
+-- App-specific profile data for a Supabase Auth user. Kept separate from
+-- Supabase's own `auth.users` table (never edit that one directly — it's
+-- managed by Supabase), per Supabase's recommended pattern. `id` is the
+-- same UUID as auth.users.id, so this is a 1:1 extension table, not a
+-- second source of truth for identity.
+CREATE TABLE IF NOT EXISTS profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    name TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Auto-create a profiles row whenever Supabase creates a new auth user, so
+-- the app never has to remember to do it from the frontend (and so
+-- supabase_auth.get_current_user's existence check always has something to
+-- find for a freshly-registered, already-verified user). SECURITY DEFINER
+-- is required here: this function must run with privileges to insert into
+-- `public.profiles` even though it's triggered by a write to `auth.users`,
+-- which the calling role does not otherwise own.
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+    INSERT INTO public.profiles (id, name)
+    VALUES (
+        new.id,
+        COALESCE(new.raw_user_meta_data ->> 'name', split_part(new.email, '@', 1))
+    )
+    ON CONFLICT (id) DO NOTHING;
+    RETURN new;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
 CREATE TABLE IF NOT EXISTS documents (
     id SERIAL PRIMARY KEY,

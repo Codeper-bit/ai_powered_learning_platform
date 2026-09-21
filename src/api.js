@@ -1,12 +1,7 @@
-import { loadUser, clearUser } from "./offlineStore";
+import { supabase } from "./supabaseClient";
 
 export const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 
-// A bare "Failed to fetch" from the browser's fetch() is almost always
-// either (a) the backend is unreachable at API_BASE, or (b) the backend
-// responded but CORS_ORIGINS on the backend doesn't include this site's
-// origin, so the browser threw the response away. Surface that instead of
-// a generic message so it's actionable without opening devtools.
 export function describeFetchError(err) {
   if (err instanceof TypeError) {
     return (
@@ -20,29 +15,25 @@ export function describeFetchError(err) {
   return err.message || "Something went wrong. Please try again.";
 }
 
-/** Fetch wrapper that attaches the logged-in user's bearer token to every
- * call. Centralizing this means no request can accidentally be sent
- * without auth, and a 401 (expired/invalid session) is handled in one
- * place instead of at every call site. */
+
 export async function apiFetch(path, options = {}) {
-  const user = loadUser();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
   const headers = { ...(options.headers || {}) };
-  // Don't force a JSON Content-Type onto a FormData body (file uploads) —
-  // the browser needs to set its own multipart boundary, and overriding it
-  // here would silently break every upload.
+
   if (options.body && !headers["Content-Type"] && !(options.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
-  if (user?.access_token) {
-    headers["Authorization"] = `Bearer ${user.access_token}`;
+  if (session?.access_token) {
+    headers["Authorization"] = `Bearer ${session.access_token}`;
   }
 
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
 
   if (response.status === 401) {
-    // Session expired or token invalid — the stored login is no longer
-    // usable, so clear it rather than let the app keep silently failing.
-    clearUser();
+
     const body = await response.json().catch(() => ({}));
     const err = new Error(body.detail || "Your session expired. Please log in again.");
     err.sessionExpired = true;
@@ -52,8 +43,6 @@ export async function apiFetch(path, options = {}) {
   return response;
 }
 
-/** Same as apiFetch, but parses JSON and throws with the server's error
- * detail on a non-OK response — the common case at most call sites. */
 export async function apiFetchJson(path, options = {}) {
   const response = await apiFetch(path, options);
   if (!response.ok) {

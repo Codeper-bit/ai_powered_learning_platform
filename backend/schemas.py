@@ -1,5 +1,6 @@
 import re
 from datetime import date
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, field_validator
 from typing import List, Optional
@@ -69,7 +70,7 @@ class DynamicQuestion(BaseModel):
 
 class SessionResponse(BaseModel):
     session_id: int
-    user_id: int
+    user_id: UUID
     subject: str
     exam_type: str
     total_questions: int

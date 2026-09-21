@@ -1,32 +1,5 @@
-const USER_KEY = "aiTutorUser";
 const BANKS_KEY_PREFIX = "aiTutorOfflineBanks:";
 const MAX_BANKS_PER_USER = 8;
-
-export function loadUser() {
-  try {
-    const raw = localStorage.getItem(USER_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-export function saveUser(user) {
-  try {
-    localStorage.setItem(USER_KEY, JSON.stringify(user));
-  } catch {
-    // localStorage can be unavailable (private browsing, storage full) —
-    // the app still works, it just won't remember the login next visit.
-  }
-}
-
-export function clearUser() {
-  try {
-    localStorage.removeItem(USER_KEY);
-  } catch {
-    // ignore
-  }
-}
 
 function banksKey(userId) {
   return `${BANKS_KEY_PREFIX}${userId}`;

@@ -1,9 +1,6 @@
 import { useState } from "react";
 import { getCurrentTheme, setTheme } from "../theme";
 
-/** Small icon button that flips data-theme on <html> between light and
- * dark. Reads/writes through theme.js so the choice persists (localStorage)
- * and stays in sync with whatever main.jsx applied before first paint. */
 function ThemeToggle({ className = "" }) {
   const [theme, setThemeState] = useState(getCurrentTheme);
 

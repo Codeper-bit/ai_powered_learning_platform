@@ -1,8 +1,10 @@
+from uuid import UUID
+
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 
 import schemas
-from authn import get_current_user
+from supabase_jwt_auth import get_current_user
 from deps import get_db
 
 router = APIRouter(prefix="/todos", tags=["todos"])
@@ -23,7 +25,7 @@ def _to_schema(row) -> schemas.Todo:
 @router.get("", response_model=list[schemas.Todo])
 async def list_todos(
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     rows = await db.fetch(
         """
@@ -41,7 +43,7 @@ async def list_todos(
 async def create_todo(
     payload: schemas.TodoCreateRequest,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     if not payload.title:
         raise HTTPException(status_code=400, detail="A task needs a title.")
@@ -65,13 +67,14 @@ async def update_todo(
     todo_id: int,
     payload: schemas.TodoUpdateRequest,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     existing = await db.fetchrow("SELECT user_id FROM todos WHERE id = $1", todo_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Task not found.")
     if existing["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="This task belongs to a different user.")
+        raise HTTPException(
+            status_code=403, detail="This task belongs to a different user.")
 
     row = await db.fetchrow(
         """
@@ -100,12 +103,13 @@ async def update_todo(
 async def delete_todo(
     todo_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     existing = await db.fetchrow("SELECT user_id FROM todos WHERE id = $1", todo_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Task not found.")
     if existing["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="This task belongs to a different user.")
+        raise HTTPException(
+            status_code=403, detail="This task belongs to a different user.")
     await db.execute("DELETE FROM todos WHERE id = $1", todo_id)
     return {"deleted": True}

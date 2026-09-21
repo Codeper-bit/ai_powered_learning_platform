@@ -1,12 +1,13 @@
 from datetime import date, timedelta
 from typing import Optional
+from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends
 
 import concept_profile
 import schemas
-from authn import get_current_user
+from supabase_jwt_auth import get_current_user
 from deps import get_db
 
 router = APIRouter(prefix="/users", tags=["progress"])
@@ -51,7 +52,7 @@ def _current_streak(attempt_dates: list[date]) -> int:
 @router.get("/me/overview", response_model=schemas.ProgressOverview)
 async def get_progress_overview(
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     """Cross-session dashboard data: the student's overall 'impression'
     snapshot (accuracy, streak, strongest/weakest concept, per-concept
@@ -103,7 +104,8 @@ async def get_progress_overview(
     )
 
     session_accuracies = [
-        round((row["correct"] / row["attempts"]) * 100, 1) if row["attempts"] else 0.0
+        round((row["correct"] / row["attempts"])
+              * 100, 1) if row["attempts"] else 0.0
         for row in session_rows
     ]
     trend = _rolling_average(session_accuracies)
@@ -122,13 +124,17 @@ async def get_progress_overview(
 
     total_attempts = sum(c.attempts for c in concept_mastery)
     total_correct = sum(c.correct for c in concept_mastery)
-    overall_accuracy = round((total_correct / total_attempts) * 100, 1) if total_attempts else 0.0
+    overall_accuracy = round(
+        (total_correct / total_attempts) * 100, 1) if total_attempts else 0.0
 
     # Prefer concepts with >=2 attempts for "best/weakest" so a single lucky
     # or unlucky guess on a brand-new concept doesn't dominate the headline.
-    qualifying = [c for c in concept_mastery if c.attempts >= 2] or concept_mastery
-    best_concept = max(qualifying, key=lambda c: c.accuracy) if qualifying else None
-    weakest_concept = min(qualifying, key=lambda c: c.accuracy) if qualifying else None
+    qualifying = [c for c in concept_mastery if c.attempts >=
+                  2] or concept_mastery
+    best_concept = max(
+        qualifying, key=lambda c: c.accuracy) if qualifying else None
+    weakest_concept = min(
+        qualifying, key=lambda c: c.accuracy) if qualifying else None
 
     streak = _current_streak([row["d"] for row in date_rows])
 
@@ -147,7 +153,7 @@ async def get_progress_overview(
 @router.get("/me/recovery", response_model=Optional[schemas.RecoveryRecommendation])
 async def get_recovery_recommendation(
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     """'What should I study next, and why' — the learning-recovery flow.
 
@@ -204,10 +210,14 @@ async def get_recovery_recommendation(
         if len(first_half) >= concept_profile.MIN_ATTEMPTS_FOR_VERDICT and \
            len(second_half) >= concept_profile.MIN_ATTEMPTS_FOR_VERDICT:
             accuracy_before = round(
-                100 * sum(1 for r in first_half if r["is_correct"]) / len(first_half), 1
+                100 *
+                sum(1 for r in first_half if r["is_correct"]
+                    ) / len(first_half), 1
             )
             accuracy_after = round(
-                100 * sum(1 for r in second_half if r["is_correct"]) / len(second_half), 1
+                100 *
+                sum(1 for r in second_half if r["is_correct"]
+                    ) / len(second_half), 1
             )
 
     return schemas.RecoveryRecommendation(

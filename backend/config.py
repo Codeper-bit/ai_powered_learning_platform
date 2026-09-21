@@ -23,10 +23,22 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 
-    # Signs access tokens issued at /auth/login and /auth/register. Falls
-    # back to a random per-process secret so local dev never crashes for
-    # lack of one — but that means tokens won't survive a restart, so
-    # production MUST set a real JWT_SECRET_KEY in the environment.
+    # --- Supabase Auth (current) -----------------------------------------
+    # Used by supabase_auth.get_current_user to verify the access token
+    # issued by Supabase Auth and signed by the project's JWT secret
+    # (Project Settings -> API -> JWT Settings -> JWT Secret in the
+    # Supabase dashboard). This is a *verification* secret, safe to hold
+    # server-side only — never send it to the frontend.
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
+    # Supabase access tokens always carry aud="authenticated"; kept
+    # configurable only in case a project customizes this.
+    SUPABASE_JWT_AUD: str = os.getenv("SUPABASE_JWT_AUD", "authenticated")
+
+    # --- Legacy custom-JWT auth (deprecated, being migrated off of) ------
+    # Signed the tokens issued by the old /auth/login and /auth/register.
+    # No longer used by any active dependency (see supabase_auth.py) —
+    # kept only until the old auth files are deleted post-migration.
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY") or secrets.token_hex(32)
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", str(60 * 24 * 7)))  # 7 days
@@ -74,6 +86,15 @@ if not settings.JWT_SECRET_KEY or os.getenv("JWT_SECRET_KEY") is None:
         "ever run more than one server process, tokens issued by one won't "
         "verify on another. Set JWT_SECRET_KEY in the environment for any "
         "real deployment."
+    )
+
+if not settings.SUPABASE_JWT_SECRET:
+    import logging
+    logging.getLogger("config").warning(
+        "SUPABASE_JWT_SECRET is not set — every request that depends on "
+        "supabase_auth.get_current_user will fail with a 500 until it is "
+        "set. Copy it from the Supabase dashboard: Project Settings -> "
+        "API -> JWT Settings -> JWT Secret."
     )
 
 

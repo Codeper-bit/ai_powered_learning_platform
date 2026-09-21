@@ -5,7 +5,7 @@ const DIFFICULTY_LEVELS = ["Easy", "Medium", "Hard"];
 const EXAM_TYPES = ["General", "WAEC", "NECO", "JAMB"];
 const MAX_QUESTIONS = 50;
 
-function OnboardingForm({ apiBase, userId, onGenerate, loading, error }) {
+function OnboardingForm({ apiBase, onGenerate, loading, error }) {
   const [mode, setMode] = useState("topic"); // "topic" | "document"
   const [uploadedDocument, setUploadedDocument] = useState(null);
 
@@ -38,7 +38,6 @@ function OnboardingForm({ apiBase, userId, onGenerate, loading, error }) {
     }
 
     onGenerate({
-      user_id: userId,
       subject: mode === "document" ? (form.subject.trim() || "") : (form.subject.trim() || "Mathematics"),
       exam_type: form.examType,
       // The free-text box is where "WAEC style", "NECO past questions",

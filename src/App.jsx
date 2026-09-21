@@ -6,9 +6,6 @@ import Dashboard from "./components/Dashboard";
 import ThemeToggle from "./components/ThemeToggle";
 import { downloadReport } from "./downloadReport";
 import {
-  loadUser,
-  saveUser,
-  clearUser,
   loadOfflineBanks,
   saveOfflineBank,
   enqueueSyncItem,
@@ -18,6 +15,7 @@ import {
   countPendingSync,
 } from "./offlineStore";
 import { apiFetch, apiFetchJson, describeFetchError } from "./api";
+import { supabase } from "./supabaseClient";
 
 
 const API_BASE = "http://127.0.0.1:8000";
@@ -34,7 +32,7 @@ function App() {
   //                -> offlinePractice -> offlineQuiz -> offlineSummary
   //                -> dashboard (learning curve + overall impression, cross-session)
   const [step, setStep] = useState("login");
-  const [user, setUser] = useState(null); // { user_id, name }
+  const [user, setUser] = useState(null); // { user_id, email } — derived from the Supabase session
 
   const [session, setSession] = useState(null); // { session_id, user_id, total_questions, time_limit, source }
   const [question, setQuestion] = useState(null);
@@ -132,32 +130,49 @@ function App() {
     return () => window.removeEventListener("online", handleOnline);
   }, [syncPendingAttempts]);
 
-  // Restore a logged-in user on load, so the name never has to be typed twice.
-  useEffect(() => {
-    const stored = loadUser();
-    if (stored) {
-      setUser(stored);
-      setOfflineBanks(loadOfflineBanks(stored.user_id));
-      setPendingSyncCount(countPendingSync(stored.user_id));
-      setStep("home");
-      if (navigator.onLine) syncPendingAttempts();
+  // Adopt a Supabase session (from initial load or a later sign-in) as the
+  // logged-in user, and load whatever's cached locally for them. Shared by
+  // the mount effect and onAuthStateChange below so "restore on refresh"
+  // and "just signed in" behave identically.
+  const applySession = useCallback((session) => {
+    if (!session?.user) {
+      setUser(null);
+      setStep("login");
+      return;
     }
+    const authedUser = { user_id: session.user.id, email: session.user.email };
+    setUser(authedUser);
+    setOfflineBanks(loadOfflineBanks(authedUser.user_id));
+    setPendingSyncCount(countPendingSync(authedUser.user_id));
+    setStep((prev) => (prev === "login" ? "home" : prev));
+    if (navigator.onLine) syncPendingAttempts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function handleAuthenticated(authedUser) {
-    setUser(authedUser);
-    saveUser(authedUser);
-    setOfflineBanks(loadOfflineBanks(authedUser.user_id));
-    setPendingSyncCount(countPendingSync(authedUser.user_id));
-    setStep("home");
-    if (navigator.onLine) syncPendingAttempts();
-  }
+  // Restore a logged-in user on load (Supabase persists its own session in
+  // localStorage — this just reads it back), then keep listening for
+  // sign-in/sign-out/token-refresh events for as long as the app is open.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) applySession(session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      applySession(session);
+    });
+
+    return () => subscription.unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function handleLogout() {
-    clearUser();
-    setUser(null);
-    setStep("login");
+    supabase.auth.signOut();
+    // No need to also clear local state here: signOut() fires
+    // onAuthStateChange with a null session, and applySession above
+    // handles resetting user/step in the one place that does it for every
+    // sign-out, not just this button.
   }
 
   const finishSession = useCallback(async () => {
@@ -267,7 +282,7 @@ function App() {
     if (!navigator.onLine) {
       setRetryError(
         "You're offline. Retry needs an internet connection to create a new quiz — " +
-          "you can still use Practice Offline from Home."
+        "you can still use Practice Offline from Home."
       );
       return;
     }
@@ -446,7 +461,7 @@ function App() {
       filename: `quiz-report-${session?.session_id ?? "session"}.txt`,
       title: "AI Learning Platform - Quiz Report",
       meta: {
-        Student: user?.name,
+        Student: user?.email,
         Subject: session?.subject,
         "Exam type": session?.exam_type,
         "Questions answered": answeredCount,
@@ -461,7 +476,7 @@ function App() {
       filename: `offline-quiz-report-${activeBank?.bankId ?? "session"}.txt`,
       title: "AI Learning Platform - Offline Quiz Report",
       meta: {
-        Student: user?.name,
+        Student: user?.email,
         Subject: activeBank?.subject,
         "Exam type": activeBank?.examType,
         "Questions answered": offlineAnswers.length,
@@ -516,9 +531,9 @@ function App() {
             </nav>
 
             <div className="flex items-center gap-3">
-              <span className="hidden text-sm text-muted sm:inline">{user.name}</span>
+              <span className="hidden text-sm text-muted sm:inline">{user.email}</span>
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-soft text-sm font-semibold text-accent-ink">
-                {user.name?.[0]?.toUpperCase() || "?"}
+                {user.email?.[0]?.toUpperCase() || "?"}
               </span>
               <ThemeToggle />
               <button
@@ -559,7 +574,7 @@ function App() {
 
         {step === "login" && (
           <div className="animate-rise-in flex justify-center">
-            <Login apiBase={API_BASE} onAuthenticated={handleAuthenticated} />
+            <Login />
           </div>
         )}
 
@@ -626,7 +641,6 @@ function App() {
           <div className="animate-rise-in">
             <OnboardingForm
               apiBase={API_BASE}
-              userId={user?.user_id}
               onGenerate={startSession}
               loading={loading}
               error={error}

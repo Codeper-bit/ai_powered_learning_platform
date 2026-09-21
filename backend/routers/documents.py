@@ -1,10 +1,11 @@
 import os
+from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
 import schemas
-from authn import get_current_user
+from supabase_jwt_auth import get_current_user
 from config import settings
 from deps import get_db
 from text_extraction import extract_text
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def upload_document(
     file: UploadFile = File(...),
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     """Accept any supported document, extract its text, and store it so a
     quiz session can be generated from it. The file itself is never kept —
@@ -37,9 +38,11 @@ async def upload_document(
     data = await file.read()
     if len(data) > settings.MAX_UPLOAD_BYTES:
         max_mb = settings.MAX_UPLOAD_BYTES // (1024 * 1024)
-        raise HTTPException(status_code=413, detail=f"File is too large (max {max_mb}MB).")
+        raise HTTPException(
+            status_code=413, detail=f"File is too large (max {max_mb}MB).")
     if not data:
-        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+        raise HTTPException(
+            status_code=400, detail="The uploaded file is empty.")
 
     try:
         text = extract_text(file.filename, data)

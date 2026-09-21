@@ -1,4 +1,5 @@
 import json
+from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import ai_engine
 import concept_profile
 import schemas
-from authn import get_current_user
+from supabase_jwt_auth import get_current_user
 from deps import get_db
 
 router = APIRouter(prefix="/attempts", tags=["attempts"])
@@ -32,7 +33,7 @@ CONFIDENCE_SCORES = {
 
 async def _confidence_label(
     db: asyncpg.Pool,
-    user_id: int,
+    user_id: UUID,
     concept: str | None,
     misconception_text: str | None,
 ) -> str:
@@ -97,7 +98,7 @@ _ATTEMPT_COLUMNS = "id, question_id, is_correct, misconception, misconception_co
 
 
 async def _find_existing_attempt(
-    db: asyncpg.Pool, user_id: int, question_id: int, attempt_key: str | None
+    db: asyncpg.Pool, user_id: UUID, question_id: int, attempt_key: str | None
 ):
     """The stored attempt this submission duplicates, or None if it's new.
 
@@ -135,7 +136,8 @@ def _stored_result(question, attempt, session_complete: bool) -> schemas.AnswerR
         analysis = schemas.MisconceptionFeedback(
             identified_misconception=attempt["misconception"],
             confidence_score=next(
-                (CONFIDENCE_SCORES[k] for k, v in CONFIDENCE_LABELS.items() if v == label), None
+                (CONFIDENCE_SCORES[k]
+                 for k, v in CONFIDENCE_LABELS.items() if v == label), None
             ),
             targeted_explanation=question["explanation"]
             or "Review the concept and try a similar question.",
@@ -149,7 +151,7 @@ def _stored_result(question, attempt, session_complete: bool) -> schemas.AnswerR
     )
 
 
-async def _session_complete(db: asyncpg.Pool, session_id: int, user_id: int) -> bool:
+async def _session_complete(db: asyncpg.Pool, session_id: int, user_id: UUID) -> bool:
     remaining = await db.fetchval(
         """
         SELECT COUNT(*) FROM questions q
@@ -174,7 +176,7 @@ async def _session_complete(db: asyncpg.Pool, session_id: int, user_id: int) -> 
 async def submit_answer(
     submission: schemas.AnswerSubmission,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     """Grade an answer and record it as a NEW attempt row.
 
@@ -208,7 +210,8 @@ async def submit_answer(
         # student — this stops one student from recording (or overwriting,
         # via the ON CONFLICT upsert below) an attempt against a session
         # they don't own.
-        raise HTTPException(status_code=403, detail="This question belongs to a different user's session")
+        raise HTTPException(
+            status_code=403, detail="This question belongs to a different user's session")
 
     # Duplicate check FIRST: a duplicate must not be re-graded, must not call
     # the AI again, and must not count itself as prior evidence when the

@@ -1,4 +1,5 @@
 import json
+from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import ai_engine
 import concept_profile
 import schemas
-from authn import get_current_user
+from supabase_jwt_auth import get_current_user
 from config import settings
 from deps import get_db
 
@@ -51,7 +52,7 @@ def parse_insights(raw_insights):
     return raw_insights
 
 
-async def _require_session_owner(db: asyncpg.Pool, session_id: int, user_id: int) -> None:
+async def _require_session_owner(db: asyncpg.Pool, session_id: int, user_id: UUID) -> None:
     """Every session-scoped endpoint below depends on this. A student can
     only ever read/act on their own session — never taken on faith from the
     URL alone."""
@@ -61,7 +62,8 @@ async def _require_session_owner(db: asyncpg.Pool, session_id: int, user_id: int
     if owner is None:
         raise HTTPException(status_code=404, detail="Session not found")
     if owner != user_id:
-        raise HTTPException(status_code=403, detail="This session belongs to a different user")
+        raise HTTPException(
+            status_code=403, detail="This session belongs to a different user")
 
 
 async def _find_reusable_batch(
@@ -147,7 +149,7 @@ async def _clone_batch(
 
 async def _create_session(
     db: asyncpg.Pool,
-    user_id: int,
+    user_id: UUID,
     payload: schemas.SessionCreateRequest,
     *,
     use_cache: bool = True,
@@ -166,12 +168,14 @@ async def _create_session(
             payload.document_id,
         )
         if doc is None:
-            raise HTTPException(status_code=404, detail="Uploaded document not found")
+            raise HTTPException(
+                status_code=404, detail="Uploaded document not found")
         # A document's content is study material the uploader chose to
         # share with the AI, not with other students — quizzing on it must
         # stay confined to whoever uploaded it.
         if doc["user_id"] is not None and doc["user_id"] != user_id:
-            raise HTTPException(status_code=403, detail="This document belongs to a different user")
+            raise HTTPException(
+                status_code=403, detail="This document belongs to a different user")
         source_text = doc["content"]
         # Let the document drive the subject label when the user didn't set one
         if payload.subject in ("", "Mathematics"):
@@ -223,7 +227,8 @@ async def _create_session(
                 subject,
                 payload.topic,
                 payload.time_limit,
-                payload.total_questions if reused_from is not None else len(batch),
+                payload.total_questions if reused_from is not None else len(
+                    batch),
                 payload.min_difficulty,
                 payload.max_difficulty,
                 payload.custom_request,
@@ -253,7 +258,8 @@ async def _create_session(
                         q.difficulty,
                         q.explanation,
                         q.misconception,
-                        json.dumps(q.option_insights) if q.option_insights else None,
+                        json.dumps(
+                            q.option_insights) if q.option_insights else None,
                     )
                     for position, q in enumerate(batch, start=1)
                 ]
@@ -313,7 +319,8 @@ async def _create_session(
         exam_type=payload.exam_type,
         total_questions=total_generated,
         time_limit=payload.time_limit,
-        source="document" if source_text else ("cached" if reused_from is not None else "topic"),
+        source="document" if source_text else (
+            "cached" if reused_from is not None else "topic"),
         first_question=first_question,
     )
 
@@ -322,7 +329,7 @@ async def _create_session(
 async def create_session(
     payload: schemas.SessionCreateRequest,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     return await _create_session(db, user_id, payload)
 
@@ -331,7 +338,7 @@ async def create_session(
 async def retry_session(
     session_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     """Start a NEW session with the same setup as `session_id`.
 
@@ -434,7 +441,7 @@ async def retry_session(
 async def get_next_question(
     session_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     await _require_session_owner(db, session_id, user_id)
 
@@ -478,7 +485,8 @@ async def get_next_question(
         target_rank = 1
     else:
         current_rank = difficulty_rank(last_attempt["difficulty"])
-        target_rank = current_rank + 1 if last_attempt["is_correct"] else current_rank - 1
+        target_rank = current_rank + \
+            1 if last_attempt["is_correct"] else current_rank - 1
         target_rank = max(1, min(3, target_rank))
 
     # --- Concept-aware layer ---------------------------------------------
@@ -509,15 +517,18 @@ async def get_next_question(
             session_id,
             WEAK_CONCEPT_STREAK_CAP,
         )
-        recent_weak_streak = sum(1 for r in recent_rows if norm(r["concept"]) in weak_keys)
+        recent_weak_streak = sum(
+            1 for r in recent_rows if norm(r["concept"]) in weak_keys)
         if recent_weak_streak < WEAK_CONCEPT_STREAK_CAP:
-            targeted = [row for row in unattempted if norm(row["concept"]) in weak_keys]
+            targeted = [row for row in unattempted if norm(
+                row["concept"]) in weak_keys]
             if targeted:
                 candidate_pool = targeted
 
     best = min(
         candidate_pool,
-        key=lambda row: (abs(difficulty_rank(row["difficulty"]) - target_rank), row["position"]),
+        key=lambda row: (
+            abs(difficulty_rank(row["difficulty"]) - target_rank), row["position"]),
     )
 
     return {
@@ -535,7 +546,7 @@ async def get_next_question(
 async def get_session_progress(
     session_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     await _require_session_owner(db, session_id, user_id)
 
@@ -576,7 +587,7 @@ async def get_session_progress(
 async def get_session_questions(
     session_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: int = Depends(get_current_user),
+    user_id: UUID = Depends(get_current_user),
 ):
     """Return the whole question batch (including correct answers and
     explanations) for local caching. Used by the frontend to build an

@@ -9,7 +9,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import os
 from dotenv import load_dotenv
 from database import create_pool
-from routers import sessions, attempts, documents, auth, progress, todos
+from routers import sessions, attempts, documents, progress, todos
+# routers.auth (old username/password login, issuing custom JWTs) is no
+# longer mounted below: registration/login now happen against Supabase
+# Auth directly from the frontend, and every other router verifies the
+# resulting Supabase token (see supabase_auth.py) instead of the old
+# custom JWT. The file itself is left in place — see MIGRATION.md —
+# and can be deleted once the new flow is confirmed working end to end.
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
@@ -46,7 +52,6 @@ app.add_middleware(
 app.include_router(sessions.router)
 app.include_router(attempts.router)
 app.include_router(documents.router)
-app.include_router(auth.router)
 app.include_router(progress.router)
 app.include_router(todos.router)
 
