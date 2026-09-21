@@ -20,17 +20,10 @@ import { supabase } from "./supabaseClient";
 
 const API_BASE = "http://127.0.0.1:8000";
 
-// A bare "Failed to fetch" from the browser's fetch() is almost always
-// either (a) the backend is unreachable at API_BASE, or (b) the backend
-// responded but CORS_ORIGINS on the backend doesn't include this site's
-// origin, so the browser threw the response away. Surface that instead of
-// a generic message so it's actionable without opening devtools.
+import { API_BASE, apiFetch, apiFetchJson, describeFetchError } from "./api";
 
 
 function App() {
-  // login -> home -> setup -> quiz -> summary
-  //                -> offlinePractice -> offlineQuiz -> offlineSummary
-  //                -> dashboard (learning curve + overall impression, cross-session)
   const [step, setStep] = useState("login");
   const [user, setUser] = useState(null); // { user_id, email } — derived from the Supabase session
 
@@ -97,18 +90,10 @@ function App() {
             attempt_key: item.attemptKey,
           }),
         });
-        // Delivered (2xx) or permanently rejected (4xx like "question not
-        // found") means this item is resolved and shouldn't be retried
-        // forever. A network failure (thrown below) or a server-side/
-        // temporary error (5xx, 408, 429) leaves it queued — safe to
-        // re-send now that the server de-dupes by attempt_key.
         const permanent = response.status >= 400 && response.status < 500
           && response.status !== 408 && response.status !== 429;
         if (response.ok || permanent) synced.push(item.clientId);
       } catch (err) {
-        // Still offline, or the request failed outright — leave this (and
-        // everything after it, since order doesn't matter here) queued for
-        // the next attempt.
         console.error("Offline sync failed for one item:", err);
       }
     }
@@ -130,10 +115,6 @@ function App() {
     return () => window.removeEventListener("online", handleOnline);
   }, [syncPendingAttempts]);
 
-  // Adopt a Supabase session (from initial load or a later sign-in) as the
-  // logged-in user, and load whatever's cached locally for them. Shared by
-  // the mount effect and onAuthStateChange below so "restore on refresh"
-  // and "just signed in" behave identically.
   const applySession = useCallback((session) => {
     if (!session?.user) {
       setUser(null);
