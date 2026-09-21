@@ -1,6 +1,3 @@
-/** Build a plain-text results report and trigger a browser download for it.
- * Runs entirely client-side (Blob + object URL) — no backend call, so it
- * works for offline sessions too. */
 export function downloadReport({ filename, title, meta, progress }) {
   const lines = [title, "=".repeat(title.length), ""];
 

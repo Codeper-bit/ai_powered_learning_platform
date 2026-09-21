@@ -1,22 +1,4 @@
--- AI Tutor: full schema, idempotent.
---
--- This is the ONLY schema file — run it via `python setup_db.py` any time:
--- on a brand-new database, or against an existing one to pick up new
--- columns/indexes added since it was first set up. Every statement here
--- uses IF NOT EXISTS (tables, columns, indexes), so re-running this is
--- always safe and never touches existing rows or drops data.
---
--- NOTE (Supabase Auth migration): this file only ADDS the new `profiles`
--- table below — it does NOT change `documents`/`quiz_sessions`/`attempts`/
--- `todos`.user_id from INTEGER to UUID, because that change is inherently
--- NOT idempotent/non-destructive for a database with existing rows (an
--- INTEGER can't be losslessly reinterpreted as a UUID). That change lives
--- in supabase_migration.sql instead, as a one-time, explicitly-reviewed
--- step — see MIGRATION.md before running it.
 
--- Old custom-auth users table. Superseded by Supabase's own auth.users
--- plus the `profiles` table below. Left in place (not dropped) until the
--- FK migration in supabase_migration.sql runs — see MIGRATION.md.
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,

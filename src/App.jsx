@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import QuestionCard from "./components/QuestionCard";
 import OnboardingForm from "./components/OnboardingForm";
 import Login from "./components/Login";
+import ResetPassword from "./components/ResetPassword";
 import Dashboard from "./components/Dashboard";
 import ThemeToggle from "./components/ThemeToggle";
 import { downloadReport } from "./downloadReport";
@@ -20,12 +21,19 @@ import { supabase } from "./supabaseClient";
 
 const API_BASE = "http://127.0.0.1:8000";
 
-import { API_BASE, apiFetch, apiFetchJson, describeFetchError } from "./api";
+// A bare "Failed to fetch" from the browser's fetch() is almost always
+// either (a) the backend is unreachable at API_BASE, or (b) the backend
+// responded but CORS_ORIGINS on the backend doesn't include this site's
+// origin, so the browser threw the response away. Surface that instead of
+// a generic message so it's actionable without opening devtools.
 
 
 function App() {
+  // login -> home -> setup -> quiz -> summary
+  //                -> offlinePractice -> offlineQuiz -> offlineSummary
+  //                -> dashboard (learning curve + overall impression, cross-session)
   const [step, setStep] = useState("login");
-  const [user, setUser] = useState(null); // { user_id, email } — derived from the Supabase session
+  const [user, setUser] = useState(null); // { user_id, email, name } — derived from the Supabase session
 
   const [session, setSession] = useState(null); // { session_id, user_id, total_questions, time_limit, source }
   const [question, setQuestion] = useState(null);
@@ -90,10 +98,18 @@ function App() {
             attempt_key: item.attemptKey,
           }),
         });
+        // Delivered (2xx) or permanently rejected (4xx like "question not
+        // found") means this item is resolved and shouldn't be retried
+        // forever. A network failure (thrown below) or a server-side/
+        // temporary error (5xx, 408, 429) leaves it queued — safe to
+        // re-send now that the server de-dupes by attempt_key.
         const permanent = response.status >= 400 && response.status < 500
           && response.status !== 408 && response.status !== 429;
         if (response.ok || permanent) synced.push(item.clientId);
       } catch (err) {
+        // Still offline, or the request failed outright — leave this (and
+        // everything after it, since order doesn't matter here) queued for
+        // the next attempt.
         console.error("Offline sync failed for one item:", err);
       }
     }
@@ -115,13 +131,24 @@ function App() {
     return () => window.removeEventListener("online", handleOnline);
   }, [syncPendingAttempts]);
 
+  // Adopt a Supabase session (from initial load or a later sign-in) as the
+  // logged-in user, and load whatever's cached locally for them. Shared by
+  // the mount effect and onAuthStateChange below so "restore on refresh"
+  // and "just signed in" behave identically.
   const applySession = useCallback((session) => {
     if (!session?.user) {
       setUser(null);
       setStep("login");
       return;
     }
-    const authedUser = { user_id: session.user.id, email: session.user.email };
+    // Display name comes from the auth metadata (set at sign-up, or supplied
+    // by Google), not from the database — no extra request needed.
+    const meta = session.user.user_metadata || {};
+    const authedUser = {
+      user_id: session.user.id,
+      email: session.user.email,
+      name: (meta.name || meta.full_name || "").trim(),
+    };
     setUser(authedUser);
     setOfflineBanks(loadOfflineBanks(authedUser.user_id));
     setPendingSyncCount(countPendingSync(authedUser.user_id));
@@ -140,7 +167,17 @@ function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      // Clicking a "reset password" email link lands back here with a
+      // temporary session and this event instead of SIGNED_IN. Route to the
+      // reset form instead of treating it like a normal login — otherwise
+      // applySession below would drop the user straight onto the home
+      // screen, recovery session and all, with no chance to set a new
+      // password.
+      if (event === "PASSWORD_RECOVERY") {
+        setStep("resetPassword");
+        return;
+      }
       applySession(session);
     });
 
@@ -442,7 +479,7 @@ function App() {
       filename: `quiz-report-${session?.session_id ?? "session"}.txt`,
       title: "AI Learning Platform - Quiz Report",
       meta: {
-        Student: user?.email,
+        Student: user?.name || user?.email,
         Subject: session?.subject,
         "Exam type": session?.exam_type,
         "Questions answered": answeredCount,
@@ -457,7 +494,7 @@ function App() {
       filename: `offline-quiz-report-${activeBank?.bankId ?? "session"}.txt`,
       title: "AI Learning Platform - Offline Quiz Report",
       meta: {
-        Student: user?.email,
+        Student: user?.name || user?.email,
         Subject: activeBank?.subject,
         "Exam type": activeBank?.examType,
         "Questions answered": offlineAnswers.length,
@@ -512,9 +549,9 @@ function App() {
             </nav>
 
             <div className="flex items-center gap-3">
-              <span className="hidden text-sm text-muted sm:inline">{user.email}</span>
+              <span className="hidden text-sm text-muted sm:inline">{user.name || user.email}</span>
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-soft text-sm font-semibold text-accent-ink">
-                {user.email?.[0]?.toUpperCase() || "?"}
+                {(user.name || user.email)?.[0]?.toUpperCase() || "?"}
               </span>
               <ThemeToggle />
               <button
@@ -556,6 +593,21 @@ function App() {
         {step === "login" && (
           <div className="animate-rise-in flex justify-center">
             <Login />
+          </div>
+        )}
+
+        {step === "resetPassword" && (
+          <div className="animate-rise-in flex justify-center">
+            <ResetPassword
+              onDone={() => {
+                // The temporary recovery session is a real, valid session,
+                // so just adopt it as a normal login rather than forcing a
+                // second sign-in with the password they just set.
+                supabase.auth.getSession().then(({ data: { session } }) => {
+                  applySession(session);
+                });
+              }}
+            />
           </div>
         )}
 
