@@ -25,10 +25,17 @@ class Settings:
 
     # --- Supabase Auth (current) -----------------------------------------
     # Used by supabase_auth.get_current_user to verify the access token
-    # issued by Supabase Auth and signed by the project's JWT secret
-    # (Project Settings -> API -> JWT Settings -> JWT Secret in the
-    # Supabase dashboard). This is a *verification* secret, safe to hold
-    # server-side only — never send it to the frontend.
+    # issued by Supabase Auth.
+    #
+    # Supabase now signs new tokens asymmetrically (ES256, ECC P-256) using
+    # a rotatable signing key, verified via the project's public JWKS
+    # endpoint — no secret needed for these. SUPABASE_JWT_SECRET (the old
+    # HS256 "Legacy shared secret", from Project Settings -> API -> JWT
+    # Keys) is now only a *fallback*, so tokens minted before your project
+    # rotated onto the new key type still verify until they expire. Once
+    # every previously-issued HS256 token has expired (check the "Previous
+    # key" row's rotation date on that page), SUPABASE_JWT_SECRET can be
+    # removed entirely.
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
     # Supabase access tokens always carry aud="authenticated"; kept
@@ -90,11 +97,12 @@ if not settings.JWT_SECRET_KEY or os.getenv("JWT_SECRET_KEY") is None:
 
 if not settings.SUPABASE_JWT_SECRET:
     import logging
-    logging.getLogger("config").warning(
-        "SUPABASE_JWT_SECRET is not set — every request that depends on "
-        "supabase_auth.get_current_user will fail with a 500 until it is "
-        "set. Copy it from the Supabase dashboard: Project Settings -> "
-        "API -> JWT Settings -> JWT Secret."
+    logging.getLogger("config").info(
+        "SUPABASE_JWT_SECRET is not set — this is fine as long as your "
+        "Supabase project's current JWT signing key is the new asymmetric "
+        "type (ES256/ECC), since those are verified via JWKS instead. It's "
+        "only needed as a fallback to verify tokens minted before the "
+        "project rotated off the legacy HS256 shared secret."
     )
 
 
