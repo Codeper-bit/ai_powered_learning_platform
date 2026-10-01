@@ -36,10 +36,8 @@ function DocumentUpload({ document, onDocumentReady, onClear, disabled }) {
         const formData = new FormData();
         formData.append("file", file);
 
-        // apiFetch attaches the logged-in user's bearer token — the
-        // backend now requires auth on this endpoint and stamps the
-        // document with the uploader's user_id, so it can only ever be
-        // used to quiz that same student.
+        // apiFetch sends this browser's device id; the backend stamps the
+        // document with it, so only the same learner can quiz on it.
         const response = await apiFetch(`/documents/upload`, {
           method: "POST",
           body: formData,
@@ -85,7 +83,7 @@ function DocumentUpload({ document, onDocumentReady, onClear, disabled }) {
           type="button"
           onClick={onClear}
           disabled={disabled}
-          className="shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium text-success-text transition hover:bg-success-soft disabled:opacity-50"
+          className="shrink-0 rounded-lg px-3 py-2 text-xs font-medium text-success-text transition hover:bg-success-soft disabled:opacity-50"
         >
           Remove
         </button>
@@ -102,7 +100,16 @@ function DocumentUpload({ document, onDocumentReady, onClear, disabled }) {
         }}
         onDragLeave={() => setDragActive(false)}
         onDrop={handleDrop}
+        role="button"
+        tabIndex={disabled ? -1 : 0}
+        aria-disabled={disabled}
         onClick={() => !disabled && !uploading && inputRef.current?.click()}
+        onKeyDown={(e) => {
+          if ((e.key === "Enter" || e.key === " ") && !disabled && !uploading) {
+            e.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
         className={`flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed p-6 text-center transition ${
           dragActive
             ? "scale-[1.01] border-accent bg-accent-soft/50"

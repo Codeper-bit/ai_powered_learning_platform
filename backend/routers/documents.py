@@ -1,33 +1,61 @@
 import os
+import re
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 import schemas
-from supabase_jwt_auth import get_current_user
 from config import settings
-from deps import get_db
+from deps import get_db, get_learner, limit_upload
 from text_extraction import extract_text
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+_READ_CHUNK = 64 * 1024
 
-@router.post("/upload", response_model=schemas.DocumentUploadResponse)
+
+def _safe_filename(name: str | None) -> str:
+    """Display-safe filename: no path parts, no control characters, bounded
+    length (it later becomes a quiz subject label inside an LLM prompt)."""
+    base = os.path.basename((name or "").replace("\\", "/"))
+    base = re.sub(r"[\x00-\x1f\x7f]", "", base).strip()
+    return (base or "document")[:120]
+
+
+async def _read_limited(file: UploadFile, limit: int) -> bytes:
+    """Read the upload in chunks and stop as soon as it exceeds `limit`, so an
+    oversized file is rejected without ever being held fully in memory."""
+    chunks, size = [], 0
+    while True:
+        chunk = await file.read(_READ_CHUNK)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > limit:
+            max_mb = limit // (1024 * 1024)
+            raise HTTPException(status_code=413, detail=f"File is too large (max {max_mb}MB).")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@router.post(
+    "/upload",
+    response_model=schemas.DocumentUploadResponse,
+    dependencies=[Depends(limit_upload)],
+)
 async def upload_document(
     file: UploadFile = File(...),
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
-    """Accept any supported document, extract its text, and store it so a
-    quiz session can be generated from it. The file itself is never kept —
-    only the extracted text, which is all the AI needs.
-
-    Requires auth and always stamps the uploader's user_id, so a document
-    can only ever be quizzed on (see the ownership check in
-    routers/sessions.py create_session) by the person who uploaded it.
-    """
-    ext = os.path.splitext(file.filename or "")[1].lower()
+    """Accept a supported document, extract its text, and store it so a quiz
+    can be generated from it. The file itself is never kept, only the
+    extracted text. The document is stamped with the uploader's learner id,
+    so it can only be quizzed on by that same learner (see the ownership
+    check in routers/sessions.py)."""
+    filename = _safe_filename(file.filename)
+    ext = os.path.splitext(filename)[1].lower()
     if ext not in settings.ALLOWED_UPLOAD_EXTENSIONS:
         supported = ", ".join(sorted(settings.ALLOWED_UPLOAD_EXTENSIONS))
         raise HTTPException(
@@ -35,24 +63,18 @@ async def upload_document(
             detail=f"Unsupported file type '{ext}'. Supported: {supported}",
         )
 
-    data = await file.read()
-    if len(data) > settings.MAX_UPLOAD_BYTES:
-        max_mb = settings.MAX_UPLOAD_BYTES // (1024 * 1024)
-        raise HTTPException(
-            status_code=413, detail=f"File is too large (max {max_mb}MB).")
+    data = await _read_limited(file, settings.MAX_UPLOAD_BYTES)
     if not data:
-        raise HTTPException(
-            status_code=400, detail="The uploaded file is empty.")
+        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
 
     try:
-        text = extract_text(file.filename, data)
+        text = extract_text(filename, data)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    word_count = len(text.split())
-    preview = " ".join(text.split()[:60])
-    if len(text.split()) > 60:
-        preview += "…"
+    words = text.split()
+    word_count = len(words)
+    preview = " ".join(words[:60]) + ("…" if word_count > 60 else "")
 
     row = await db.fetchrow(
         """
@@ -61,14 +83,14 @@ async def upload_document(
         RETURNING id
         """,
         user_id,
-        file.filename,
+        filename,
         text,
         word_count,
     )
 
     return schemas.DocumentUploadResponse(
         document_id=row["id"],
-        filename=file.filename,
+        filename=filename,
         word_count=word_count,
         preview=preview,
     )

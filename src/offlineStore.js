@@ -28,17 +28,6 @@ export function saveOfflineBank(userId, bank) {
   }
 }
 
-export function deleteOfflineBank(userId, bankId) {
-  const existing = loadOfflineBanks(userId);
-  const updated = existing.filter((b) => b.bankId !== bankId);
-  try {
-    localStorage.setItem(banksKey(userId), JSON.stringify(updated));
-  } catch {
-    // ignore
-  }
-  return updated;
-}
-
 // ---- Offline sync queue -----------------------------------------------
 // Answers submitted while offline are recorded locally here, then replayed
 // against POST /attempts (the same endpoint used for live answers) as soon

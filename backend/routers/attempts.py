@@ -7,8 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import ai_engine
 import concept_profile
 import schemas
-from supabase_jwt_auth import get_current_user
-from deps import get_db
+from deps import get_db, get_learner
 
 router = APIRouter(prefix="/attempts", tags=["attempts"])
 
@@ -176,7 +175,7 @@ async def _session_complete(db: asyncpg.Pool, session_id: int, user_id: UUID) ->
 async def submit_answer(
     submission: schemas.AnswerSubmission,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     """Grade an answer and record it as a NEW attempt row.
 

@@ -1,56 +1,29 @@
 """Centralized configuration. All env-var reads happen here, once, so the
 rest of the app just imports `settings`."""
 import os
-import secrets
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Placeholder hosts from the .env.example template — if any of these are
-# still in DATABASE_URL, the app hasn't been configured yet. Failing fast
-# here with a clear message replaces a raw `socket.gaierror: getaddrinfo
-# failed` traceback (which looks like a code bug) with an actionable one.
 _PLACEHOLDER_DB_HOSTS = {"host", "hostname", "your-host", "localhost-placeholder"}
 
 
 def _split_csv(value: str | None, default: list[str]) -> list[str]:
+    """Comma-separated list -> clean list. Trailing slashes are dropped
+    because a browser's Origin header never has one, so 'https://x.app/'
+    would otherwise silently never match."""
     if not value:
         return default
-    return [origin.strip() for origin in value.split(",") if origin.strip()]
+    items = [item.strip().rstrip("/") for item in value.split(",")]
+    return [item for item in items if item] or default
 
 
 class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 
-    # --- Supabase Auth (current) -----------------------------------------
-    # Used by supabase_auth.get_current_user to verify the access token
-    # issued by Supabase Auth.
-    #
-    # Supabase now signs new tokens asymmetrically (ES256, ECC P-256) using
-    # a rotatable signing key, verified via the project's public JWKS
-    # endpoint — no secret needed for these. SUPABASE_JWT_SECRET (the old
-    # HS256 "Legacy shared secret", from Project Settings -> API -> JWT
-    # Keys) is now only a *fallback*, so tokens minted before your project
-    # rotated onto the new key type still verify until they expire. Once
-    # every previously-issued HS256 token has expired (check the "Previous
-    # key" row's rotation date on that page), SUPABASE_JWT_SECRET can be
-    # removed entirely.
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
-    SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
-    # Supabase access tokens always carry aud="authenticated"; kept
-    # configurable only in case a project customizes this.
-    SUPABASE_JWT_AUD: str = os.getenv("SUPABASE_JWT_AUD", "authenticated")
-
-    # --- Legacy custom-JWT auth (deprecated, being migrated off of) ------
-    # Signed the tokens issued by the old /auth/login and /auth/register.
-    # No longer used by any active dependency (see supabase_auth.py) —
-    # kept only until the old auth files are deleted post-migration.
-    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY") or secrets.token_hex(32)
-    JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", str(60 * 24 * 7)))  # 7 days
-
-    # Explicit origins instead of "*" so allow_credentials can be safe.
+    # Explicit origins (never "*"). Comma-separated in the env var.
     CORS_ORIGINS: list[str] = _split_csv(
         os.getenv("CORS_ORIGINS"),
         default=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -61,66 +34,43 @@ class Settings:
 
     MAX_BATCH_SIZE: int = int(os.getenv("MAX_BATCH_SIZE", "50"))
 
-    # Question-batch reuse (the app's caching layer): before generating a
-    # fresh batch with the LLM, check for a recent batch matching the same
-    # subject/exam/difficulty and copy it instead. This is what keeps LLM
-    # token spend roughly flat as concurrent traffic grows on popular
-    # subjects, instead of scaling 1:1 with request volume.
+    # Question-batch reuse: before calling the LLM, look for a recent batch
+    # with the same subject/exam/difficulty and copy it instead.
     QUESTION_REUSE_WINDOW_DAYS: int = int(os.getenv("QUESTION_REUSE_WINDOW_DAYS", "14"))
     QUESTION_REUSE_MAX_COUNT: int = int(os.getenv("QUESTION_REUSE_MAX_COUNT", "25"))
 
-    # Hard ceiling on a single LLM call so a slow/stuck provider response
-    # can't tie up a request (and its DB connection) indefinitely under load.
+    # Hard ceiling on a single LLM call.
     AI_TIMEOUT_SECONDS: int = int(os.getenv("AI_TIMEOUT_SECONDS", "45"))
 
-    # Document upload limits
+    # Document uploads
     MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(8 * 1024 * 1024)))  # 8MB
-    ALLOWED_UPLOAD_EXTENSIONS: set[str] = {
-        ".txt", ".md", ".pdf", ".docx", ".csv", ".rtf",
-    }
-    # Characters of extracted document text fed into the prompt. Keeps the
-    # request within the model's context window regardless of source size.
-    MAX_SOURCE_CHARS: int = int(os.getenv("MAX_SOURCE_CHARS", "12000"))
+    ALLOWED_UPLOAD_EXTENSIONS: set[str] = {".txt", ".md", ".pdf", ".docx", ".csv", ".rtf"}
+    MAX_SOURCE_CHARS: int = int(os.getenv("MAX_SOURCE_CHARS", "12000"))  # chars sent to the LLM
+    MAX_STORED_CHARS: int = int(os.getenv("MAX_STORED_CHARS", "500000"))  # chars kept in the DB
+    MAX_PDF_PAGES: int = int(os.getenv("MAX_PDF_PAGES", "300"))
+    MAX_DOCX_UNZIPPED_BYTES: int = int(os.getenv("MAX_DOCX_UNZIPPED_BYTES", str(50 * 1024 * 1024)))
+
+    # There is no login, so the endpoints that spend LLM tokens or CPU are
+    # rate-limited per client instead (requests per minute).
+    RATE_LIMIT_GENERATE_PER_MIN: int = int(os.getenv("RATE_LIMIT_GENERATE_PER_MIN", "8"))
+    RATE_LIMIT_UPLOAD_PER_MIN: int = int(os.getenv("RATE_LIMIT_UPLOAD_PER_MIN", "10"))
 
 
 settings = Settings()
 
-if not settings.JWT_SECRET_KEY or os.getenv("JWT_SECRET_KEY") is None:
-    import logging
-    logging.getLogger("config").warning(
-        "JWT_SECRET_KEY is not set — using a random secret for this process "
-        "only. Every login token will become invalid on restart, and if you "
-        "ever run more than one server process, tokens issued by one won't "
-        "verify on another. Set JWT_SECRET_KEY in the environment for any "
-        "real deployment."
-    )
-
-if not settings.SUPABASE_JWT_SECRET:
-    import logging
-    logging.getLogger("config").info(
-        "SUPABASE_JWT_SECRET is not set — this is fine as long as your "
-        "Supabase project's current JWT signing key is the new asymmetric "
-        "type (ES256/ECC), since those are verified via JWKS instead. It's "
-        "only needed as a fallback to verify tokens minted before the "
-        "project rotated off the legacy HS256 shared secret."
-    )
-
 
 def _looks_like_placeholder_db_url(url: str) -> str | None:
-    """Returns a human-readable reason if DATABASE_URL is clearly still the
-    .env.example template, else None."""
+    """Human-readable reason if DATABASE_URL is empty or still the template."""
     if not url:
         return "DATABASE_URL is empty."
     try:
-        # Cheap parse: postgresql://user:pass@host:port/db
         after_at = url.split("@", 1)[-1]
         host = after_at.split(":", 1)[0].split("/", 1)[0]
     except Exception:
         return None
     if host.lower() in _PLACEHOLDER_DB_HOSTS:
         return (
-            f"DATABASE_URL still has the placeholder host '{host}' from the "
-            f".env template. Replace it with your real Postgres connection "
-            f"string (e.g. from Render/Supabase/local Postgres)."
+            f"DATABASE_URL still has the placeholder host '{host}'. Replace it "
+            f"with your real Postgres connection string."
         )
     return None

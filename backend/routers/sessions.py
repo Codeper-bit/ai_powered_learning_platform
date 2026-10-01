@@ -7,9 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 import ai_engine
 import concept_profile
 import schemas
-from supabase_jwt_auth import get_current_user
 from config import settings
-from deps import get_db
+from deps import get_db, get_learner, limit_generate
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -53,7 +52,7 @@ def parse_insights(raw_insights):
 
 
 async def _require_session_owner(db: asyncpg.Pool, session_id: int, user_id: UUID) -> None:
-    """Every session-scoped endpoint below depends on this. A student can
+    """Every session-scoped endpoint below depends on this. A learner can
     only ever read/act on their own session — never taken on faith from the
     URL alone."""
     owner = await db.fetchval(
@@ -325,20 +324,21 @@ async def _create_session(
     )
 
 
-@router.post("", response_model=schemas.SessionResponse)
+@router.post("", response_model=schemas.SessionResponse, dependencies=[Depends(limit_generate)])
 async def create_session(
     payload: schemas.SessionCreateRequest,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     return await _create_session(db, user_id, payload)
 
 
-@router.post("/{session_id}/retry", response_model=schemas.SessionResponse)
+@router.post("/{session_id}/retry", response_model=schemas.SessionResponse,
+             dependencies=[Depends(limit_generate)])
 async def retry_session(
     session_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     """Start a NEW session with the same setup as `session_id`.
 
@@ -441,7 +441,7 @@ async def retry_session(
 async def get_next_question(
     session_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     await _require_session_owner(db, session_id, user_id)
 
@@ -546,7 +546,7 @@ async def get_next_question(
 async def get_session_progress(
     session_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     await _require_session_owner(db, session_id, user_id)
 
@@ -587,7 +587,7 @@ async def get_session_progress(
 async def get_session_questions(
     session_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     """Return the whole question batch (including correct answers and
     explanations) for local caching. Used by the frontend to build an

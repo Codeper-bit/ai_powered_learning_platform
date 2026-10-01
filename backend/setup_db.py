@@ -6,8 +6,10 @@ idempotent (IF NOT EXISTS everywhere), so this never drops or overwrites
 existing data — it only creates what's missing.
 
 Usage:
-    $env:DATABASE_URL="postgresql://..."   (PowerShell)
-    python setup_db.py
+    python setup_db.py          (reads DATABASE_URL from .env or the environment)
+
+An EXISTING database from the old login version: also run
+migrate_remove_auth.sql once (see README).
 """
 import asyncio
 import os
@@ -27,7 +29,7 @@ async def main():
     try:
         with open("schema.sql", "r") as f:
             await conn.execute(f.read())
-        print("Done: schema is up to date (users, documents, quiz_sessions, questions, attempts).")
+        print("Done: schema is up to date (learners, documents, quiz_sessions, questions, attempts, todos).")
     finally:
         await conn.close()
 

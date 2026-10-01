@@ -7,8 +7,7 @@ from fastapi import APIRouter, Depends
 
 import concept_profile
 import schemas
-from supabase_jwt_auth import get_current_user
-from deps import get_db
+from deps import get_db, get_learner
 
 router = APIRouter(prefix="/users", tags=["progress"])
 
@@ -52,14 +51,14 @@ def _current_streak(attempt_dates: list[date]) -> int:
 @router.get("/me/overview", response_model=schemas.ProgressOverview)
 async def get_progress_overview(
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     """Cross-session dashboard data: the student's overall 'impression'
     snapshot (accuracy, streak, strongest/weakest concept, per-concept
     status + suspected misconception) plus the full learning-curve series,
     aggregated across every session they've ever done — not just the last
     one (that's what /sessions/{id}/progress is for). Always the
-    authenticated caller's own data — there is no path parameter to swap in
+    caller's own data — there is no path parameter to swap in
     someone else's id."""
     concept_stats = await concept_profile.get_concept_stats(db, user_id)
 
@@ -153,7 +152,7 @@ async def get_progress_overview(
 @router.get("/me/recovery", response_model=Optional[schemas.RecoveryRecommendation])
 async def get_recovery_recommendation(
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     """'What should I study next, and why' — the learning-recovery flow.
 

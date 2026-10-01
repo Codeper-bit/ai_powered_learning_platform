@@ -8,6 +8,7 @@ with a message safe to show the user.
 from __future__ import annotations
 
 import io
+import zipfile
 from typing import Callable
 
 from config import settings
@@ -34,7 +35,7 @@ def _extract_pdf(data: bytes) -> str:
         raise ValueError("This PDF could not be read (it may be corrupted or scanned images only).") from exc
 
     pages = []
-    for page in reader.pages:
+    for page in reader.pages[: settings.MAX_PDF_PAGES]:
         try:
             pages.append(page.extract_text() or "")
         except Exception:
@@ -52,6 +53,14 @@ def _extract_docx(data: bytes) -> str:
         import docx
     except ImportError as exc:  # pragma: no cover
         raise ValueError("DOCX support is not installed on the server.") from exc
+
+    # A .docx is a zip: refuse ones that would inflate to something huge.
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            if sum(i.file_size for i in archive.infolist()) > settings.MAX_DOCX_UNZIPPED_BYTES:
+                raise ValueError("This Word document is too large to process.")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("This Word document could not be read.") from exc
 
     try:
         document = docx.Document(io.BytesIO(data))
@@ -78,12 +87,18 @@ EXTRACTORS: dict[str, Callable[[bytes], str]] = {
 }
 
 
-def extract_text(filename: str, data: bytes) -> str:
-    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+def extract_text(filename: str | None, data: bytes) -> str:
+    name = filename or ""
+    ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if ext not in EXTRACTORS:
         supported = ", ".join(sorted(settings.ALLOWED_UPLOAD_EXTENSIONS))
-        raise ValueError(f"Unsupported file type '{ext or filename}'. Supported: {supported}")
-    return EXTRACTORS[ext](data)
+        raise ValueError(f"Unsupported file type '{ext or name}'. Supported: {supported}")
+    # Postgres TEXT cannot hold NUL bytes (PDF extraction emits them often),
+    # which would otherwise surface as a 500 on insert.
+    text = EXTRACTORS[ext](data).replace("\x00", "").strip()
+    if not text:
+        raise ValueError("No readable text found in this file.")
+    return text[: settings.MAX_STORED_CHARS]
 
 
 def sample_for_prompt(text: str, max_chars: int = settings.MAX_SOURCE_CHARS) -> str:

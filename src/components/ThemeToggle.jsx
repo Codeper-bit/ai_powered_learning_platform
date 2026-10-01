@@ -15,7 +15,7 @@ function ThemeToggle({ className = "" }) {
       onClick={toggle}
       aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
       title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-      className={`flex h-8 w-8 items-center justify-center rounded-full border border-line-strong bg-paper text-sm text-ink-soft transition hover:bg-paper-raised ${className}`}
+      className={`flex h-9 w-9 items-center justify-center rounded-full border border-line-strong bg-paper text-sm text-ink-soft transition hover:bg-paper-raised ${className}`}
     >
       {theme === "dark" ? "☀️" : "🌙"}
     </button>

@@ -2,7 +2,7 @@ import re
 from datetime import date
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import List, Optional
 
 from config import settings
@@ -17,26 +17,44 @@ def _clean_str(v):
     return str(v).strip()
 
 
+DIFFICULTIES = ("Easy", "Medium", "Hard")
+
+
+def _normalize_difficulty(v, default):
+    v = _clean_str(v).title()
+    return v if v in DIFFICULTIES else default
+
+
 class SessionCreateRequest(BaseModel):
-    """Registration/setup form payload -> creates a quiz_session + batch of questions.
-    The owner is always the authenticated caller (see authn.get_current_user) —
-    never taken from the request body, so one student can't create or read
-    sessions under another student's id."""
-    exam_type: str = "General"          # e.g. WAEC / NECO / JAMB
-    subject: str = "Mathematics"
-    topic: Optional[str] = None
+    """Setup form payload -> creates a quiz_session + a batch of questions.
+    The owner is always the caller's learner id (see deps.get_learner), never
+    taken from the body. Free-text fields are length-capped because they are
+    inserted into the LLM prompt."""
+    exam_type: str = Field(default="General", max_length=40)   # e.g. WAEC / NECO / JAMB
+    subject: str = Field(default="Mathematics", max_length=200)
+    topic: Optional[str] = Field(default=None, max_length=200)
     time_limit: int = 30                # minutes
     total_questions: int = 20           # capped server-side
     min_difficulty: str = "Easy"
     max_difficulty: str = "Hard"
-    custom_request: Optional[str] = None
+    custom_request: Optional[str] = Field(default=None, max_length=1000)
     # set to generate from an uploaded document
     document_id: Optional[int] = None
 
-    @field_validator("exam_type", "subject", "min_difficulty", "max_difficulty", mode="before")
+    @field_validator("exam_type", "subject", mode="before")
     @classmethod
     def clean_fields(cls, v):
         return _clean_str(v)
+
+    @field_validator("min_difficulty", mode="before")
+    @classmethod
+    def clean_min_difficulty(cls, v):
+        return _normalize_difficulty(v, "Easy")
+
+    @field_validator("max_difficulty", mode="before")
+    @classmethod
+    def clean_max_difficulty(cls, v):
+        return _normalize_difficulty(v, "Hard")
 
     @field_validator("total_questions", mode="after")
     @classmethod
@@ -47,6 +65,13 @@ class SessionCreateRequest(BaseModel):
     @classmethod
     def clamp_time_limit(cls, v):
         return max(1, min(v, 180))
+
+    @model_validator(mode="after")
+    def order_difficulty(self):
+        # "from Hard up to Easy" is a typo, not a request: put the range in order.
+        if DIFFICULTIES.index(self.min_difficulty) > DIFFICULTIES.index(self.max_difficulty):
+            self.min_difficulty, self.max_difficulty = self.max_difficulty, self.min_difficulty
+        return self
 
     model_config = ConfigDict(extra="ignore")
 
@@ -81,7 +106,7 @@ class SessionResponse(BaseModel):
 
 class AnswerSubmission(BaseModel):
     question_id: int
-    selected_answer: str
+    selected_answer: str = Field(max_length=1000)
     # Set by the client when this submission is being replayed from the
     # offline sync queue rather than answered live. Purely informational —
     # grading and dedup work identically either way, so this can never be
@@ -127,47 +152,9 @@ class AnswerResult(BaseModel):
     session_complete: bool = False
 
 
-class RegisterRequest(BaseModel):
-    name: str
-    password: str
-    email: Optional[str] = None
-
-    @field_validator("name", mode="before")
-    @classmethod
-    def clean_name(cls, v):
-        return _clean_str(v)
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def clean_email(cls, v):
-        cleaned = _clean_str(v)
-        return cleaned or None
-
-    model_config = ConfigDict(extra="ignore")
-
-
-class LoginRequest(BaseModel):
-    name: str
-    password: str
-
-    @field_validator("name", mode="before")
-    @classmethod
-    def clean_name(cls, v):
-        return _clean_str(v)
-
-    model_config = ConfigDict(extra="ignore")
-
-
-class AuthResponse(BaseModel):
-    user_id: int
-    name: str
-    access_token: str
-    token_type: str = "bearer"
-
-
 class TodoCreateRequest(BaseModel):
-    title: str
-    subject: Optional[str] = None
+    title: str = Field(max_length=300)
+    subject: Optional[str] = Field(default=None, max_length=200)
     due_date: Optional[date] = None     # parsed from an ISO date string, e.g. "2026-09-20"
     priority: str = "medium"            # low | medium | high
 
@@ -191,8 +178,8 @@ class TodoCreateRequest(BaseModel):
 
 
 class TodoUpdateRequest(BaseModel):
-    title: Optional[str] = None
-    subject: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=300)
+    subject: Optional[str] = Field(default=None, max_length=200)
     due_date: Optional[date] = None
     priority: Optional[str] = None
     is_complete: Optional[bool] = None

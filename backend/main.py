@@ -6,16 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-import os
-from dotenv import load_dotenv
+from config import settings
 from database import create_pool
-from routers import sessions, attempts, documents, progress, todos
-# routers.auth (old username/password login, issuing custom JWTs) is no
-# longer mounted below: registration/login now happen against Supabase
-# Auth directly from the frontend, and every other router verifies the
-# resulting Supabase token (see supabase_auth.py) instead of the old
-# custom JWT. The file itself is left in place — see MIGRATION.md —
-# and can be deleted once the new flow is confirmed working end to end.
+from routers import attempts, documents, progress, sessions, todos
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
@@ -24,29 +17,21 @@ logger = logging.getLogger("main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.db = await create_pool()
-    logger.info("Database pool ready")
-
-    if os.getenv("CORS_ORIGINS") == "http://localhost:5173/":
-        logger.warning(
-            "CORS_ORIGINS is still the localhost default. If your frontend"
-            "is deployed, set CORS_ORIGINS on this service to its exact "
-            "URL (e.g. https://your-frontend.onrender.com) or every "
-            "request from it will be blocked by the browser."
-        )
-    else:
-        logger.info("CORS_ORIGINS = %s", os.getenv("CORS_ORIGINS"))
+    logger.info("Database pool ready. Allowed origins: %s", settings.CORS_ORIGINS)
     yield
     await app.state.db.close()
 
 
 app = FastAPI(title="AI Learning Platform", lifespan=lifespan)
 
+# No cookies or credentials are used (identity is a plain header), so
+# credentialed CORS stays off and only the headers the app needs are allowed.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("CORS_ORIGINS")],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Device-Id"],
 )
 
 app.include_router(sessions.router)
@@ -56,30 +41,20 @@ app.include_router(progress.router)
 app.include_router(todos.router)
 
 
-def _cors_headers_for(request) -> dict:
+def _cors_headers_for(request: Request) -> dict:
     """CORS headers for a response built OUTSIDE CORSMiddleware.
 
-    Starlette runs the catch-all Exception handler in ServerErrorMiddleware,
-    which sits above CORSMiddleware, so a crash's 500 used to reach the
-    browser with no Access-Control-Allow-Origin. The browser then reported a
-    "CORS error" (and fetch threw a TypeError), hiding the real 500 behind a
-    misleading message. Only the one configured origin is ever echoed back.
-    """
-    origin = request.headers.get("origin")
-    allowed = os.getenv("CORS_ORIGINS")
-    if origin and allowed and origin.rstrip("/") == allowed.rstrip("/"):
-        return {
-            "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Credentials": "true",
-            "Vary": "Origin",
-        }
+    The catch-all 500 handler runs above CORSMiddleware, so without this the
+    browser reports a misleading "CORS error" instead of the real 500."""
+    origin = (request.headers.get("origin") or "").rstrip("/")
+    if origin and origin in settings.CORS_ORIGINS:
+        return {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
     return {}
 
 
 @app.exception_handler(Exception)
-async def unhandled_exception_handler(request, exc):
-    logger.exception("Unhandled error on %s %s",
-                     request.method, request.url.path)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
         content={"detail": "Something went wrong. Please try again."},
@@ -90,19 +65,23 @@ async def unhandled_exception_handler(request, exc):
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 405:
-        # The #1 cause of a 405 here is the frontend's VITE_API_BASE
-        # pointing at the wrong host (e.g. the static frontend site itself,
-        # which only serves GET) instead of this backend service.
         logger.warning(
-            "405 Method Not Allowed: %s %s from origin=%s — check that "
-            "VITE_API_BASE on the frontend points at THIS backend's URL.",
-            request.method,
-            request.url.path,
-            request.headers.get("origin"),
+            "405 Method Not Allowed: %s %s. Check that the frontend's "
+            "VITE_API_BASE points at this backend.",
+            request.method, request.url.path,
         )
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
 
 
 @app.get("/")
 async def root():
     return {"message": "AI Learning Platform API is running"}
+
+
+@app.get("/health")
+async def health():
+    return {"ok": True}

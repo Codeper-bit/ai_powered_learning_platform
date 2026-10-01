@@ -135,7 +135,7 @@ function StudyTodoList() {
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g. Finish chemistry problem set"
-            className="w-full rounded-lg border border-line bg-paper-raised p-2.5 text-sm text-ink placeholder:text-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent-soft"
+            className="w-full rounded-lg border border-line bg-paper-raised p-2.5 text-base text-ink placeholder:text-faint sm:text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent-soft"
             autoFocus
           />
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -144,18 +144,18 @@ function StudyTodoList() {
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
               placeholder="Subject (optional)"
-              className="col-span-2 rounded-lg border border-line bg-paper-raised p-2.5 text-sm text-ink placeholder:text-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent-soft sm:col-span-1"
+              className="col-span-2 rounded-lg border border-line bg-paper-raised p-2.5 text-base text-ink placeholder:text-faint sm:text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent-soft sm:col-span-1"
             />
             <input
               type="date"
               value={dueDate}
               onChange={(e) => setDueDate(e.target.value)}
-              className="rounded-lg border border-line bg-paper-raised p-2.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent-soft"
+              className="rounded-lg border border-line bg-paper-raised p-2.5 text-base text-ink focus:border-accent sm:text-sm focus:outline-none focus:ring-2 focus:ring-accent-soft"
             />
             <select
               value={priority}
               onChange={(e) => setPriority(e.target.value)}
-              className="field-select rounded-lg border border-line bg-paper-raised p-2.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent-soft"
+              className="field-select rounded-lg border border-line bg-paper-raised p-2.5 text-base text-ink focus:border-accent sm:text-sm focus:outline-none focus:ring-2 focus:ring-accent-soft"
             >
               <option value="low">Low priority</option>
               <option value="medium">Medium priority</option>
@@ -193,7 +193,7 @@ function StudyTodoList() {
                 <button
                   onClick={() => toggleComplete(todo)}
                   aria-label="Mark complete"
-                  className="h-5 w-5 shrink-0 rounded-full border-2 border-line-strong transition hover:border-accent"
+                  className="h-6 w-6 shrink-0 rounded-full border-2 border-line-strong transition hover:border-accent"
                 />
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${pri.dot}`} title={`${pri.label} priority`} />
                 <div className="min-w-0 flex-1">
@@ -212,7 +212,7 @@ function StudyTodoList() {
                 <button
                   onClick={() => removeTask(todo.id)}
                   aria-label="Delete task"
-                  className="shrink-0 text-faint transition hover:text-error-text"
+                  className="shrink-0 p-2 text-faint transition hover:text-error-text"
                 >
                   ✕
                 </button>
@@ -234,7 +234,7 @@ function StudyTodoList() {
                     <button
                       onClick={() => toggleComplete(todo)}
                       aria-label="Mark incomplete"
-                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-success text-paper-raised"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-success text-paper-raised"
                     >
                       ✓
                     </button>
@@ -242,7 +242,7 @@ function StudyTodoList() {
                     <button
                       onClick={() => removeTask(todo.id)}
                       aria-label="Delete task"
-                      className="shrink-0 text-faint transition hover:text-error-text"
+                      className="shrink-0 p-2 text-faint transition hover:text-error-text"
                     >
                       ✕
                     </button>

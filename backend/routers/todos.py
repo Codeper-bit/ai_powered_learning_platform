@@ -4,8 +4,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 
 import schemas
-from supabase_jwt_auth import get_current_user
-from deps import get_db
+from deps import get_db, get_learner
 
 router = APIRouter(prefix="/todos", tags=["todos"])
 
@@ -25,7 +24,7 @@ def _to_schema(row) -> schemas.Todo:
 @router.get("", response_model=list[schemas.Todo])
 async def list_todos(
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     rows = await db.fetch(
         """
@@ -43,7 +42,7 @@ async def list_todos(
 async def create_todo(
     payload: schemas.TodoCreateRequest,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     if not payload.title:
         raise HTTPException(status_code=400, detail="A task needs a title.")
@@ -67,8 +66,10 @@ async def update_todo(
     todo_id: int,
     payload: schemas.TodoUpdateRequest,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
+    if payload.title is not None and not payload.title.strip():
+        raise HTTPException(status_code=400, detail="A task needs a title.")
     existing = await db.fetchrow("SELECT user_id FROM todos WHERE id = $1", todo_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Task not found.")
@@ -103,7 +104,7 @@ async def update_todo(
 async def delete_todo(
     todo_id: int,
     db: asyncpg.Pool = Depends(get_db),
-    user_id: UUID = Depends(get_current_user),
+    user_id: UUID = Depends(get_learner),
 ):
     existing = await db.fetchrow("SELECT user_id FROM todos WHERE id = $1", todo_id)
     if existing is None:

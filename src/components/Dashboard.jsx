@@ -15,20 +15,20 @@ import {
 import { apiFetchJson } from "../api";
 import StudyTodoList from "./StudyTodoList";
 
-// Mirrors the palette in index.css (@theme). Recharts renders plain SVG, so
-// colors are hardcoded here rather than referenced as CSS variables — keeps
-// the chart rendering independent of how/where the SVG ends up in the DOM.
+// Read from the theme tokens in index.css (@theme static), so the charts
+// follow light/dark mode instead of staying stuck on the light palette.
 const COLORS = {
-  line: "#dbe3d5",
-  lineStrong: "#c3cec0",
-  muted: "#6b7b72",
-  ink: "#17322c",
-  inkSoft: "#3f5750",
-  paperRaised: "#fbfcfa",
-  accent: "#e1a73f",
-  success: "#2f8f5b",
-  error: "#c1473a",
+  line: "var(--color-line)",
+  lineStrong: "var(--color-line-strong)",
+  muted: "var(--color-muted)",
+  ink: "var(--color-ink)",
+  inkSoft: "var(--color-ink-soft)",
+  paperRaised: "var(--color-paper-raised)",
+  accent: "var(--color-accent)",
+  success: "var(--color-success)",
+  error: "var(--color-error)",
 };
+const CHART_ANIMATION_MS = 350;
 
 const TIERS = {
   strong: { min: 70, color: COLORS.success, text: "text-success-text", label: "Strong" },
@@ -125,7 +125,7 @@ function ImpressionRing({ accuracy }) {
 
 /** Cross-session dashboard: "impression" snapshot + learning curve +
  * concept mastery + study to-do list. Fetches /users/me/overview once on
- * mount — the authenticated caller's own data, via the bearer token. */
+ * mount: this browser's own data, selected by its device id. */
 function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -167,14 +167,15 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
   }, []);
 
   function handleStartTargeted() {
-    if (!recovery || !onStartTargeted) return;
+    if (!recovery || !onStartTargeted || startingTargeted) return;
     setStartingTargeted(true);
-    onStartTargeted(recovery);
+    // On success this screen unmounts; on failure re-enable the button.
+    Promise.resolve(onStartTargeted(recovery)).finally(() => setStartingTargeted(false));
   }
 
   if (loading) {
     return (
-      <div className="animate-rise-in rounded-2xl border border-line bg-paper-raised p-8 text-center shadow-card">
+      <div className="rounded-2xl border border-line bg-paper-raised p-8 text-center shadow-card">
         <span className="animate-spin-slow mx-auto mb-3 block h-6 w-6 rounded-full border-2 border-line-strong border-t-accent" />
         <p className="text-sm text-muted">Loading your progress…</p>
       </div>
@@ -185,7 +186,7 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
     return (
       <div className="animate-rise-in rounded-2xl border border-error-soft bg-error-soft/60 p-6 text-center shadow-card">
         <p className="text-sm text-error-text">{error}</p>
-        <button onClick={onBack} className="mt-4 text-sm font-medium text-ink-soft underline">
+        <button type="button" onClick={onBack} className="mt-4 text-sm font-medium text-ink-soft underline">
           ← Back
         </button>
       </div>
@@ -372,13 +373,21 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
               <Tooltip content={<CurveTooltip />} />
               <Line
                 type="monotone"
+                animationDuration={CHART_ANIMATION_MS}
                 dataKey="accuracy"
                 stroke={COLORS.lineStrong}
                 strokeWidth={1.5}
                 dot={{ r: 3, fill: COLORS.paperRaised, stroke: COLORS.inkSoft, strokeWidth: 1.5 }}
                 activeDot={{ r: 4 }}
               />
-              <Line type="monotone" dataKey="trend" stroke={COLORS.accent} strokeWidth={2.5} dot={false} />
+              <Line
+                type="monotone"
+                animationDuration={CHART_ANIMATION_MS}
+                dataKey="trend"
+                stroke={COLORS.accent}
+                strokeWidth={2.5}
+                dot={false}
+              />
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -420,7 +429,7 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
               tickLine={false}
             />
             <Tooltip content={<ConceptTooltip />} cursor={{ fill: COLORS.line, opacity: 0.4 }} />
-            <Bar dataKey="accuracy" radius={[0, 6, 6, 0]} maxBarSize={18}>
+            <Bar dataKey="accuracy" radius={[0, 6, 6, 0]} maxBarSize={18} animationDuration={CHART_ANIMATION_MS}>
               {concept_mastery.map((entry, i) => (
                 <Cell key={i} fill={tierFor(entry.accuracy).color} />
               ))}

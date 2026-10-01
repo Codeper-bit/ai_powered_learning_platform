@@ -5,7 +5,7 @@ const DIFFICULTY_LEVELS = ["Easy", "Medium", "Hard"];
 const EXAM_TYPES = ["General", "WAEC", "NECO", "JAMB"];
 const MAX_QUESTIONS = 50;
 
-function OnboardingForm({ apiBase, onGenerate, loading, error }) {
+function OnboardingForm({ onGenerate, loading, error }) {
   const [mode, setMode] = useState("topic"); // "topic" | "document"
   const [uploadedDocument, setUploadedDocument] = useState(null);
 
@@ -110,7 +110,6 @@ function OnboardingForm({ apiBase, onGenerate, loading, error }) {
             <div>
               <label className={labelClass}>Study material</label>
               <DocumentUpload
-                apiBase={apiBase}
                 document={uploadedDocument}
                 onDocumentReady={setUploadedDocument}
                 onClear={() => setUploadedDocument(null)}
@@ -173,6 +172,7 @@ function OnboardingForm({ apiBase, onGenerate, loading, error }) {
               <label className={labelClass}>Questions (max {MAX_QUESTIONS})</label>
               <input
                 type="number"
+                inputMode="numeric"
                 min={1}
                 max={MAX_QUESTIONS}
                 value={form.totalQuestions}
@@ -186,6 +186,7 @@ function OnboardingForm({ apiBase, onGenerate, loading, error }) {
               <div className="relative">
                 <input
                   type="number"
+                  inputMode="numeric"
                   min={1}
                   max={120}
                   value={form.timeLimitMinutes}

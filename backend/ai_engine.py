@@ -8,24 +8,27 @@ from typing import List, Optional
 from groq import AsyncGroq
 
 import schemas
-import os
-from dotenv import load_dotenv
+from config import settings
 from text_extraction import sample_for_prompt
 
-load_dotenv()
 logger = logging.getLogger("ai_engine")
 
-client = AsyncGroq(
-    api_key=os.getenv("GROQ_API_KEY"), timeout=120.0, max_retries=4,) if os.getenv("GROQ_API_KEY") else None
+client = (
+    AsyncGroq(api_key=settings.GROQ_API_KEY, timeout=120.0, max_retries=4)
+    if settings.GROQ_API_KEY
+    else None
+)
 
 QUESTION_GEN_MODEL = "openai/gpt-oss-120b"
 ANALYSIS_MODEL = "openai/gpt-oss-120b"
-AI_TIMEOUT_SECONDS = int(os.getenv("AI_TIMEOUT_SECONDS", "45"))
+AI_TIMEOUT_SECONDS = settings.AI_TIMEOUT_SECONDS
 
 
 def _require_client():
     if not client:
-        raise ValueError("GROQ_API_KEY is not configured in .env")
+        # Operator detail goes to the log; the browser gets a neutral message.
+        logger.error("GROQ_API_KEY is not set; cannot generate questions.")
+        raise ValueError("Question generation isn't available right now. Please try again later.")
 
 
 def _build_batch_prompt(
