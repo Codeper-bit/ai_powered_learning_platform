@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { apiFetchJson } from "../api";
 import StudyTodoList from "./StudyTodoList";
+import { buildSampleProgress, isSampleOn, setSampleOn } from "../sampleProgress";
 
 // Read from the theme tokens in index.css (@theme static), so the charts
 // follow light/dark mode instead of staying stuck on the light palette.
@@ -123,6 +124,42 @@ function ImpressionRing({ accuracy }) {
   );
 }
 
+/** Orange "SAMPLE" tag shown next to every section title while example data is on. */
+function SampleTag() {
+  return (
+    <span className="ml-2 inline-block rounded-md bg-accent px-1.5 py-0.5 align-middle text-[10px] font-bold uppercase tracking-wider text-[#17322c]">
+      Sample
+    </span>
+  );
+}
+
+/** Big, unmissable notice at the top of the dashboard while example data is on. */
+function SampleBanner({ onStartQuiz, onClear }) {
+  return (
+    <div
+      role="status"
+      className="rounded-2xl border-2 border-dashed border-accent bg-accent-soft p-4 shadow-card sm:p-5"
+    >
+      <p className="text-sm font-bold uppercase tracking-wide text-accent-ink">
+        ⚠ Sample data · not your progress
+      </p>
+      <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
+        <span className="font-semibold text-ink">You have no real progress yet.</span> Everything
+        below is made-up example data, shown only so you can see what this page looks like after a
+        few quizzes. Take a quiz to start building your own.
+      </p>
+      <div className="mt-3 grid gap-2 sm:flex">
+        <button type="button" onClick={onStartQuiz} className="btn-primary">
+          Start a real quiz →
+        </button>
+        <button type="button" onClick={onClear} className="btn-secondary">
+          ✕ Clear sample data
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Cross-session dashboard: "impression" snapshot + learning curve +
  * concept mastery + study to-do list. Fetches /users/me/overview once on
  * mount: this browser's own data, selected by its device id. */
@@ -132,6 +169,7 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
   const [error, setError] = useState("");
   const [recovery, setRecovery] = useState(null);
   const [startingTargeted, setStartingTargeted] = useState(false);
+  const [sample, setSample] = useState(isSampleOn);
 
   useEffect(() => {
     let cancelled = false;
@@ -140,7 +178,12 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
 
     apiFetchJson("/users/me/overview")
       .then((json) => {
-        if (!cancelled) setData(json);
+        if (cancelled) return;
+        setData(json);
+        if (json?.total_sessions > 0) {
+          setSampleOn(false); // real progress exists: the sample is no longer needed
+          setSample(false);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err.message || "Could not load your progress.");
@@ -166,11 +209,29 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
     };
   }, []);
 
+  // Example data is shown only when switched on AND there is no real progress.
+  const hasRealData = Boolean(data && data.total_sessions > 0);
+  const showingSample = sample && !hasRealData;
+  const sampleView = useMemo(() => (showingSample ? buildSampleProgress() : null), [showingSample]);
+  const activeRecovery = showingSample ? sampleView.recovery : recovery;
+
+  function loadSample() {
+    setSampleOn(true);
+    setSample(true);
+    window.scrollTo({ top: 0 });
+  }
+
+  function clearSample() {
+    setSampleOn(false);
+    setSample(false);
+    window.scrollTo({ top: 0 });
+  }
+
   function handleStartTargeted() {
-    if (!recovery || !onStartTargeted || startingTargeted) return;
+    if (!activeRecovery || !onStartTargeted || startingTargeted) return;
     setStartingTargeted(true);
     // On success this screen unmounts; on failure re-enable the button.
-    Promise.resolve(onStartTargeted(recovery)).finally(() => setStartingTargeted(false));
+    Promise.resolve(onStartTargeted(activeRecovery)).finally(() => setStartingTargeted(false));
   }
 
   if (loading) {
@@ -193,7 +254,7 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
     );
   }
 
-  if (!data || data.total_sessions === 0) {
+  if (!showingSample && !hasRealData) {
     return (
       <div className="animate-rise-in space-y-5">
         <div className="flex items-center justify-between">
@@ -216,6 +277,17 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
           >
             Start a quiz →
           </button>
+
+          <div className="mt-6 border-t border-dashed border-line-strong pt-5">
+            <p className="mb-3 text-sm text-muted">
+              Just looking around? Preview this page with{" "}
+              <span className="font-semibold text-ink-soft">made-up example data</span>. It is
+              clearly labelled as a sample and you can clear it at any time.
+            </p>
+            <button type="button" onClick={loadSample} className="btn-secondary">
+              👀 Load sample data
+            </button>
+          </div>
         </div>
         <StudyTodoList />
       </div>
@@ -231,7 +303,10 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
     weakest_concept,
     concept_mastery,
     learning_curve,
-  } = data;
+  } = showingSample ? sampleView.overview : data;
+
+  // Sample cards get a dashed orange border so they can't be mistaken for real results.
+  const cardBorder = showingSample ? "border-2 border-dashed border-accent" : "border border-line";
 
   const curveData = learning_curve.map((p, i) => ({ ...p, index: i + 1 }));
   const barHeight = Math.max(180, concept_mastery.length * 38 + 20);
@@ -239,15 +314,21 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
   return (
     <div className="animate-rise-in space-y-5">
       <div className="flex items-center justify-between">
-        <h2 className="font-display text-xl font-semibold text-ink">Your progress</h2>
+        <h2 className="font-display text-xl font-semibold text-ink">
+          Your progress{showingSample && <SampleTag />}
+        </h2>
         <button onClick={onBack} className="text-sm font-medium text-muted underline hover:text-ink-soft">
           ← Back
         </button>
       </div>
 
+      {showingSample && <SampleBanner onStartQuiz={onStartQuiz} onClear={clearSample} />}
+
       {/* Impression snapshot */}
-      <div className="rounded-2xl border border-line bg-paper-raised p-6 shadow-card sm:p-8">
-        <p className="mb-4 text-sm font-medium text-muted">Overall impression</p>
+      <div className={`rounded-2xl ${cardBorder} bg-paper-raised p-6 shadow-card sm:p-8`}>
+        <p className="mb-4 text-sm font-medium text-muted">
+          Overall impression{showingSample && <SampleTag />}
+        </p>
         <div className="flex flex-col items-center gap-6 sm:flex-row">
           <ImpressionRing accuracy={overall_accuracy} />
           <div className="grid flex-1 grid-cols-2 gap-3">
@@ -301,35 +382,37 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
       </div>
 
       {/* Learning recovery: "what should I study next, and why" */}
-      {recovery && (
-        <div className="rounded-2xl border border-accent/40 bg-accent-soft/30 p-6 shadow-card sm:p-8">
-          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-accent-ink">Focus next</p>
-          <h3 className="font-display text-xl font-semibold text-ink">{recovery.concept}</h3>
+      {activeRecovery && (
+        <div className={`rounded-2xl ${showingSample ? "border-2 border-dashed border-accent" : "border border-accent/40"} bg-accent-soft/30 p-6 shadow-card sm:p-8`}>
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-accent-ink">
+            Focus next{showingSample && <SampleTag />}
+          </p>
+          <h3 className="font-display text-xl font-semibold text-ink">{activeRecovery.concept}</h3>
 
           <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">Why we think this</p>
-          <p className="text-sm text-ink-soft">{recovery.evidence}.</p>
-          {recovery.suspected_misconception && (
+          <p className="text-sm text-ink-soft">{activeRecovery.evidence}.</p>
+          {activeRecovery.suspected_misconception && (
             <p className="mt-2 rounded-xl border-l-4 border-accent bg-paper-raised/70 p-3 text-sm text-ink-soft">
-              <span className="font-semibold">{recovery.misconception_confidence}:</span>{" "}
-              {recovery.suspected_misconception}
+              <span className="font-semibold">{activeRecovery.misconception_confidence}:</span>{" "}
+              {activeRecovery.suspected_misconception}
             </p>
           )}
 
-          {recovery.accuracy_before != null && recovery.accuracy_after != null && (
+          {activeRecovery.accuracy_before != null && activeRecovery.accuracy_after != null && (
             <div className="mt-3 flex items-center gap-4 text-sm">
               <span className="text-muted">
-                Before: <span className="font-semibold text-ink">{recovery.accuracy_before}%</span>
+                Before: <span className="font-semibold text-ink">{activeRecovery.accuracy_before}%</span>
               </span>
               <span className="text-faint">→</span>
               <span className="text-muted">
-                After: <span className="font-semibold text-ink">{recovery.accuracy_after}%</span>
+                After: <span className="font-semibold text-ink">{activeRecovery.accuracy_after}%</span>
               </span>
             </div>
           )}
 
           <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-muted">Recommended</p>
           <p className="mb-4 text-sm text-ink-soft">
-            {recovery.recommended_question_count} targeted practice questions on this concept.
+            {activeRecovery.recommended_question_count} targeted practice questions on this concept.
           </p>
 
           <button
@@ -339,12 +422,19 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
           >
             {startingTargeted ? "Starting…" : "Start targeted practice →"}
           </button>
+          {showingSample && (
+            <p className="mt-2 text-xs text-muted">
+              This recommendation is sample data. The practice quiz it starts is real.
+            </p>
+          )}
         </div>
       )}
 
       {/* Learning curve */}
-      <div className="rounded-2xl border border-line bg-paper-raised p-6 shadow-card sm:p-8">
-        <p className="mb-1 font-display text-lg font-semibold text-ink">Learning curve</p>
+      <div className={`rounded-2xl ${cardBorder} bg-paper-raised p-6 shadow-card sm:p-8`}>
+        <p className="mb-1 font-display text-lg font-semibold text-ink">
+          Learning curve{showingSample && <SampleTag />}
+        </p>
         <p className="mb-4 text-sm text-muted">Accuracy per session, with the overall trend.</p>
 
         {curveData.length < 2 ? (
@@ -406,8 +496,10 @@ function Dashboard({ onBack, onStartQuiz, onStartTargeted }) {
       </div>
 
       {/* Concept mastery */}
-      <div className="rounded-2xl border border-line bg-paper-raised p-6 shadow-card sm:p-8">
-        <p className="mb-1 font-display text-lg font-semibold text-ink">Concept mastery</p>
+      <div className={`rounded-2xl ${cardBorder} bg-paper-raised p-6 shadow-card sm:p-8`}>
+        <p className="mb-1 font-display text-lg font-semibold text-ink">
+          Concept mastery{showingSample && <SampleTag />}
+        </p>
         <p className="mb-4 text-sm text-muted">Accuracy by concept, across every session.</p>
 
         <ResponsiveContainer width="100%" height={barHeight}>
