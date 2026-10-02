@@ -12,6 +12,8 @@ export function Spinner({ className = "" }) {
 const prefersReducedMotion = () =>
   window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
+/** Feedback after an answer. Scrolls itself into view (on a phone it renders
+ * below the fold) and focuses its button so Enter moves on. */
 export function QuizFeedback({ result, onNext, nextLabel, loading = false }) {
   const panelRef = useRef(null);
   const buttonRef = useRef(null);

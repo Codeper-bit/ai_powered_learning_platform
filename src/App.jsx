@@ -555,7 +555,15 @@ function App() {
         )}
 
         {step === "home" && (
-          <div className="animate-rise-in grid gap-4 sm:grid-cols-2">
+          <div className="animate-rise-in">
+            <p className="mb-4 flex items-start gap-2 rounded-xl border border-line bg-paper-raised px-4 py-3 text-sm text-ink-soft">
+              <span aria-hidden="true">👤</span>
+              <span>
+                <span className="font-semibold text-ink">Guest mode.</span> No account needed. Your
+                progress is saved in this browser.
+              </span>
+            </p>
+          <div className="grid gap-4 sm:grid-cols-2">
             <HomeCard icon="✨" title="Start a New Quiz" onClick={() => go("setup")}>
               <p className="mt-1 text-sm text-muted">
                 Generate fresh questions on any subject. Needs internet.
@@ -590,6 +598,7 @@ function App() {
                 See your learning curve and overall impression across every session.
               </p>
             </HomeCard>
+          </div>
           </div>
         )}
 
