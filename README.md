@@ -320,6 +320,3 @@ The backend and front end deploy separately, for example the API on Render and t
 | Quiz generation fails | Check `GROQ_API_KEY`, and the `AI_TIMEOUT_SECONDS` limit. |
 | Can't log in right after sign-up | Email confirmation is on. Click the link in the confirmation email first. |
 
----
-
-d your license here.
